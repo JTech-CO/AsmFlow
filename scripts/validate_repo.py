@@ -10,6 +10,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
@@ -278,19 +279,64 @@ def check_contract_fixtures() -> None:
                 fail(f"SSE data must decode to an object in {path.relative_to(ROOT)}:{line_number}")
 
 
+def git_recorded_modes() -> dict[str, int] | None:
+    """The executable bit as git recorded it, or None outside a work tree.
+
+    The filesystem mode cannot be trusted: a checkout on a Windows drive reports
+    every file as 0777, so a script that lost its bit in the index still looks
+    executable locally and only fails on a Linux CI checkout. What git stores is
+    the same everywhere, so that is what this checks when it is available.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--stage", "--", "scripts", "examples", "tests"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    modes: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(maxsplit=3)
+        if len(fields) == 4:
+            modes[fields[3].strip()] = int(fields[0], 8)
+    return modes or None
+
+
 def check_scripts() -> None:
-    scripts = [
-        ROOT / "scripts/validate_repo.py",
-        ROOT / "scripts/package.sh",
-        ROOT / "examples/curl-chat-completions.sh",
-        ROOT / "examples/curl-responses.sh",
-        ROOT / "tests/mock_provider.py",
-        ROOT / "tests/mock_mcp_stdio.py",
-    ]
-    for path in scripts:
-        mode = path.stat().st_mode
-        if not mode & stat.S_IXUSR:
-            fail(f"script is not executable: {path.relative_to(ROOT)}")
+    """Anything carrying a shebang must be executable.
+
+    Deriving the list from the shebang rather than from a hard-coded list means
+    a new gate script cannot be added without its bit.
+    """
+    candidates = sorted(
+        list(ROOT.glob("scripts/*.py"))
+        + list(ROOT.glob("scripts/*.sh"))
+        + list(ROOT.glob("examples/*.sh"))
+        + list(ROOT.glob("tests/mock_*.py"))
+    )
+    if not candidates:
+        fail("no scripts were found to check")
+    recorded = git_recorded_modes()
+    for path in candidates:
+        if path.read_bytes()[:2] != b"#!":
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        if recorded is not None:
+            if relative not in recorded:
+                fail(f"script is not tracked by git: {relative}")
+            if not recorded[relative] & 0o111:
+                fail(
+                    f"script is not executable in the git index: {relative} "
+                    f"(fix with: git update-index --chmod=+x {relative})"
+                )
+            continue
+        if not path.stat().st_mode & stat.S_IXUSR:
+            fail(f"script is not executable: {relative}")
 
 
 def check_size_and_binary_policy() -> None:
