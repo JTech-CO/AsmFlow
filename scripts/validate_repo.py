@@ -339,6 +339,52 @@ def check_scripts() -> None:
             fail(f"script is not executable: {relative}")
 
 
+DEFINE_RE = re.compile(r"\s*%i?define\s+([A-Za-z_][A-Za-z0-9_]*)(?![\w(])")
+
+
+def macro_definitions(path: Path) -> list[tuple[str, int]]:
+    found = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        match = DEFINE_RE.match(line)
+        if match:
+            found.append((match.group(1), number))
+    return found
+
+
+def check_macro_namespace() -> None:
+    """No macro name may be defined twice.
+
+    NASM lets a later %define silently replace an earlier one, so two headers
+    that happen to pick the same name produce a translation unit where the
+    meaning depends on include order and nothing warns. That is not theoretical:
+    `runtime.inc` and `config.inc` both defined RT_SIZE, and the one file that
+    included both walked an array of 40-byte records with a stride of 96 and
+    crashed the daemon. The include directory is one flat namespace, so this
+    check treats it as one.
+    """
+    owner: dict[str, str] = {}
+    for path in sorted((ROOT / "include").glob("*.inc")):
+        for name, number in macro_definitions(path):
+            where = f"{path.relative_to(ROOT).as_posix()}:{number}"
+            if name in owner:
+                fail(
+                    f"macro {name} is defined twice: {owner[name]} and {where}. "
+                    f"Headers share one namespace; give one of them its own prefix."
+                )
+            owner[name] = where
+
+    sources = sorted(
+        list((ROOT / "src").rglob("*.asm")) + list((ROOT / "tests").rglob("*.asm"))
+    )
+    for path in sources:
+        for name, number in macro_definitions(path):
+            if name in owner:
+                fail(
+                    f"{path.relative_to(ROOT).as_posix()}:{number} redefines {name}, "
+                    f"which {owner[name]} already defines"
+                )
+
+
 def check_size_and_binary_policy() -> None:
     allowed_binary_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
     for path in ROOT.rglob("*"):
@@ -388,6 +434,7 @@ def main() -> int:
         ("examples", check_examples),
         ("contract fixtures", check_contract_fixtures),
         ("scripts", check_scripts),
+        ("macro namespace", check_macro_namespace),
         ("size/binary policy", check_size_and_binary_policy),
         ("status disclosure", check_status_disclosure),
     ]

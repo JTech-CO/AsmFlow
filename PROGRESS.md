@@ -155,6 +155,7 @@
 | 2026-08-27 | The frame ceiling applies to accumulated bytes, not to a completed frame | Waiting for the terminator before checking would let a peer that never sends one grow the buffer without bound, which is what the ceiling exists to prevent. |
 | 2026-08-27 | A method whose subsystem is unbuilt returns `unsupported_in_this_build` | An empty result would claim there is nothing to report, which is a different fact from being unable to report. |
 | 2026-08-27 | The daemon's long-lived state is one heap block | The loop's source table and the control server's connection table are kilobytes each; a stack frame would silently overrun, and one zeroed block makes teardown safe from the first failure onward. |
+| 2026-08-27 | The include directory is one macro namespace, checked by `make check` | NASM lets a later `%define` replace an earlier one with no warning, so a name chosen twice makes meaning depend on include order. `RT_SIZE` was defined by both `config.inc` and `runtime.inc`, and the one file including both crashed on any route with two targets. |
 
 ## Last passed gate
 

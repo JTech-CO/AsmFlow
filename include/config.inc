@@ -94,12 +94,12 @@
 %define PRV_SIZE            176
 
 ; --- af_cfg_route_target (40 bytes) ----------------------------------------
-%define RT_PROVIDER_ID    0
-%define RT_PROVIDER_INDEX 8         ; resolved during validation; -1 is invalid
-%define RT_UPSTREAM_MODEL 16
-%define RT_PRIORITY       24        ; signed
-%define RT_WEIGHT         32
-%define RT_SIZE           40
+%define RTG_PROVIDER_ID    0
+%define RTG_PROVIDER_INDEX 8         ; resolved during validation; -1 is invalid
+%define RTG_UPSTREAM_MODEL 16
+%define RTG_PRIORITY       24        ; signed
+%define RTG_WEIGHT         32
+%define RTG_SIZE           40
 
 ; --- af_cfg_route (88 bytes) -----------------------------------------------
 %define RTE_ID                0

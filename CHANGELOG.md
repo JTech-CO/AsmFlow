@@ -7,6 +7,15 @@ once executable releases begin.
 
 ## [Unreleased]
 
+### Fixed
+
+- `routes.get` and `routes.list` crashed the daemon for any route with more
+  than one target. `include/config.inc` and `include/runtime.inc` both defined
+  `RT_SIZE`, and `src/control/control_methods.asm` includes both, so the target
+  array was walked with the runtime's 96-byte stride instead of the record's
+  40. The route-target fields are now `RTG_*`, and `make check` fails on any
+  macro name defined in two headers, since NASM replaces one silently.
+
 ### Planned
 
 - OpenAI-compatible Responses and Chat Completions data plane.

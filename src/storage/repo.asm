@@ -748,7 +748,7 @@ af_repo_write_route_targets:
         cmp     r14, [r12 + RTE_TARGET_COUNT]
         jae     .finished
         mov     rax, r14
-        imul    rax, rax, RT_SIZE
+        imul    rax, rax, RTG_SIZE
         add     rax, [r12 + RTE_TARGETS]
         mov     [rsp + 8], rax
 
@@ -773,28 +773,28 @@ af_repo_write_route_targets:
         mov     rcx, [rsp + 8]
         mov     rdi, r13
         mov     rsi, 3
-        mov     rdx, [rcx + RT_PROVIDER_ID]
+        mov     rdx, [rcx + RTG_PROVIDER_ID]
         call    af_db_bind_cstr
         test    rax, rax
         js      .finalize_insert
         mov     rcx, [rsp + 8]
         mov     rdi, r13
         mov     rsi, 4
-        mov     rdx, [rcx + RT_UPSTREAM_MODEL]
+        mov     rdx, [rcx + RTG_UPSTREAM_MODEL]
         call    af_db_bind_cstr
         test    rax, rax
         js      .finalize_insert
         mov     rcx, [rsp + 8]
         mov     rdi, r13
         mov     rsi, 5
-        mov     rdx, [rcx + RT_PRIORITY]
+        mov     rdx, [rcx + RTG_PRIORITY]
         call    af_db_bind_int
         test    rax, rax
         js      .finalize_insert
         mov     rcx, [rsp + 8]
         mov     rdi, r13
         mov     rsi, 6
-        mov     rdx, [rcx + RT_WEIGHT]
+        mov     rdx, [rcx + RTG_WEIGHT]
         call    af_db_bind_int
         test    rax, rax
         js      .finalize_insert

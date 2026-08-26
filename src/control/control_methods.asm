@@ -885,26 +885,26 @@ af_ctl_write_route:
         cmp     r13, [r12 + RTE_TARGET_COUNT]
         jae     .targets_done
         mov     rax, r13
-        imul    rax, rax, RT_SIZE
+        imul    rax, rax, RTG_SIZE
         add     rax, [r12 + RTE_TARGETS]
         mov     r14, rax
         mov     rdi, rbx
         call    af_jw_begin_object
         mov     rdi, rbx
         lea     rsi, [k_provider_id]
-        mov     rdx, [r14 + RT_PROVIDER_ID]
+        mov     rdx, [r14 + RTG_PROVIDER_ID]
         call    af_jw_member_string
         mov     rdi, rbx
         lea     rsi, [k_upstream_model]
-        mov     rdx, [r14 + RT_UPSTREAM_MODEL]
+        mov     rdx, [r14 + RTG_UPSTREAM_MODEL]
         call    af_jw_member_string
         mov     rdi, rbx
         lea     rsi, [k_priority]
-        mov     rdx, [r14 + RT_PRIORITY]
+        mov     rdx, [r14 + RTG_PRIORITY]
         call    af_jw_member_int
         mov     rdi, rbx
         lea     rsi, [k_weight]
-        mov     rdx, [r14 + RT_WEIGHT]
+        mov     rdx, [r14 + RTG_WEIGHT]
         call    af_jw_member_uint
         mov     rdi, rbx
         call    af_jw_end_object

@@ -7,6 +7,7 @@ only exist in the real process.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import signal
@@ -205,6 +206,42 @@ class ControlProtocolTests(unittest.TestCase):
             self.assertEqual(1, len(route["targets"]))
             self.assertEqual("local-ollama", route["targets"][0]["provider_id"])
             self.assertEqual(10, route["targets"][0]["priority"])
+
+    def test_every_route_target_is_reported(self) -> None:
+        """A route with more than one target reports all of them.
+
+        The single-target fixture cannot see a wrong array stride, because
+        index 0 is at offset 0 whatever the stride is. This walks past the
+        first element, which is where an incorrect record size shows up.
+        """
+
+        def add_second_target(document: dict) -> None:
+            second = copy.deepcopy(document["providers"][0])
+            second["id"] = "second-provider"
+            second["display_name"] = "Second provider"
+            document["providers"].append(second)
+            document["routes"][0]["targets"].append(
+                {
+                    "provider_id": "second-provider",
+                    "upstream_model": "second-model",
+                    "priority": 20,
+                    "weight": 7,
+                }
+            )
+
+        with DaemonUnderTest(mutate=add_second_target) as daemon:
+            with daemon.connect() as client:
+                route = client.call("routes.get", {"id": "general-route"})
+                targets = route["targets"]
+                self.assertEqual(2, len(targets))
+                self.assertEqual("local-ollama", targets[0]["provider_id"])
+                self.assertEqual("second-provider", targets[1]["provider_id"])
+                self.assertEqual("second-model", targets[1]["upstream_model"])
+                self.assertEqual(20, targets[1]["priority"])
+                self.assertEqual(7, targets[1]["weight"])
+            self.assertIsNone(
+                daemon.process.poll(), "the daemon must survive the request"
+            )
 
     def test_get_by_identifier(self) -> None:
         with DaemonUnderTest() as daemon, daemon.connect() as client:

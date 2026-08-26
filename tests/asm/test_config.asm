@@ -648,7 +648,7 @@ AF_TEST "config/parse_produces_a_snapshot_with_one_reference", 128
         ; The route target must have been resolved to an index at load time.
         mov     rax, [r12 + CFG_ROUTES]
         mov     rax, [rax + RTE_TARGETS]
-        AF_CHECK_EQ qword [rax + RT_PROVIDER_INDEX], 0, "the target should resolve to provider 0"
+        AF_CHECK_EQ qword [rax + RTG_PROVIDER_INDEX], 0, "the target should resolve to provider 0"
 
         ; A held reference keeps the snapshot alive across a release.
         mov     rdi, r12

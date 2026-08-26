@@ -6,7 +6,7 @@
 ; advertises the Responses family needs at least one target whose provider
 ; advertises it too.
 ;
-; Resolution happens here as well. `RT_PROVIDER_INDEX` is filled in during
+; Resolution happens here as well. `RTG_PROVIDER_INDEX` is filled in during
 ; validation so the router never has to search by string at request time; a
 ; target that cannot be resolved is a rejection, not a runtime surprise.
 
@@ -840,7 +840,7 @@ af_cfg_load_targets:
 
         mov     [r14 + RTE_TARGET_COUNT], rsi
         lea     rdi, [r12 + CFG_ARENA]
-        mov     rdx, RT_SIZE
+        mov     rdx, RTG_SIZE
         call    af_arena_calloc
         test    rax, rax
         jz      .nomem
@@ -867,7 +867,7 @@ af_cfg_load_targets:
         js      .done
 
         mov     rax, [rsp + 32]
-        imul    rax, rax, RT_SIZE
+        imul    rax, rax, RTG_SIZE
         add     rax, [r14 + RTE_TARGETS]
         mov     r15, rax
 
@@ -894,15 +894,15 @@ af_cfg_load_targets:
         lea     rdi, [r12 + CFG_ARENA]
         mov     rsi, [rsp]
         mov     rdx, [rsp + 8]
-        lea     rcx, [r15 + RT_PROVIDER_ID]
+        lea     rcx, [r15 + RTG_PROVIDER_ID]
         call    af_cfg_intern
         test    rax, rax
         js      .done
 
         ; Resolve now: the router must never search by string at request time.
         mov     rdi, r12
-        mov     rsi, [r15 + RT_PROVIDER_ID]
-        lea     rdx, [r15 + RT_PROVIDER_INDEX]
+        mov     rsi, [r15 + RTG_PROVIDER_ID]
+        lea     rdx, [r15 + RTG_PROVIDER_INDEX]
         call    af_cfg_resolve_provider
         test    rax, rax
         js      .unknown_provider
@@ -923,7 +923,7 @@ af_cfg_load_targets:
         lea     rdi, [r12 + CFG_ARENA]
         mov     rsi, [rsp]
         mov     rdx, [rsp + 8]
-        lea     rcx, [r15 + RT_UPSTREAM_MODEL]
+        lea     rcx, [r15 + RTG_UPSTREAM_MODEL]
         call    af_cfg_intern
         test    rax, rax
         js      .done
@@ -933,7 +933,7 @@ af_cfg_load_targets:
         mov     rdx, -2147483648
         mov     rcx, 2147483647
         mov     r8, r13
-        lea     r9, [r15 + RT_PRIORITY]
+        lea     r9, [r15 + RTG_PRIORITY]
         call    af_cfg_req_int
         test    rax, rax
         js      .done
@@ -943,7 +943,7 @@ af_cfg_load_targets:
         mov     rdx, 1
         mov     rcx, 1000000
         mov     r8, r13
-        lea     r9, [r15 + RT_WEIGHT]
+        lea     r9, [r15 + RTG_WEIGHT]
         call    af_cfg_req_int
         test    rax, rax
         js      .done
@@ -1125,9 +1125,9 @@ af_cfg_route_has_capable_target:
         cmp     r14, [r12 + RTE_TARGET_COUNT]
         jae     .no
         mov     rax, r14
-        imul    rax, rax, RT_SIZE
+        imul    rax, rax, RTG_SIZE
         add     rax, [r12 + RTE_TARGETS]
-        mov     rcx, [rax + RT_PROVIDER_INDEX]
+        mov     rcx, [rax + RTG_PROVIDER_INDEX]
         cmp     rcx, 0
         jl      .next
         mov     rax, rcx
