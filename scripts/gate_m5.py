@@ -219,6 +219,13 @@ def run_suite(name: str, module: str, build_dir: Path) -> None:
     if result.returncode != 0:
         fail(f"{name} failed:\n{result.stdout}\n{result.stderr}")
         return
+    # unittest exits 0 on a run that skipped every test. The suites here skip
+    # when the daemon is not built — correct under `make check`, which is the
+    # buildless M0 gate, and a silent hole here, where the build is a
+    # prerequisite. A skip under the gate means the binary was not found.
+    if "skipped=" in result.stderr or re.search(r"Ran 0 tests", result.stderr):
+        fail(f"{name} skipped tests under the gate:\n{result.stderr}")
+        return
     counted = re.search(r"Ran (\d+) test", result.stderr)
     ok(f"{name} ({counted.group(1) if counted else '?'} tests)")
 

@@ -34,6 +34,17 @@ class DaemonUnderTest:
     """A daemon in a private directory, torn down however the test ends."""
 
     def __init__(self, mutate=None, extra_env=None) -> None:
+        # The skip lives here, not in each suite's `setUpClass`, because this
+        # constructor is the only path that starts a daemon. `make check` is
+        # the buildless M0 gate — Python and Make and nothing else — so a suite
+        # that needs a binary must skip rather than error there. Restating that
+        # once per test class is a rule the next test class forgets, and the
+        # six M5 suites did: seventeen classes, no guard, and `make check` on a
+        # clean checkout reported seventy errors instead of seventy skips.
+        if not daemon_path().is_file():
+            raise unittest.SkipTest(
+                f"{daemon_path()} is not built; run `make build-debug` first"
+            )
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "run").mkdir()
@@ -117,13 +128,6 @@ class DaemonUnderTest:
 
 
 class ControlProtocolTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        if not daemon_path().is_file():
-            raise unittest.SkipTest(
-                f"{daemon_path()} is not built; run `make build-debug` first"
-            )
-
     # --- HARNESS.md M4 DoD 5 ---
 
     def test_socket_and_directory_permissions(self) -> None:
@@ -456,35 +460,14 @@ class ControlProtocolTests(unittest.TestCase):
                 "env": "OPENAI_API_KEY",
             }
 
-        daemon = DaemonUnderTest.__new__(DaemonUnderTest)
-        daemon.tmp = tempfile.TemporaryDirectory()
-        daemon.root = Path(daemon.tmp.name)
-        (daemon.root / "run").mkdir()
-        (daemon.root / "state").mkdir()
-        document = config_corpus.base_document()
-        daemon.socket_path = str(daemon.root / "run" / "asmflow" / "control.sock")
-        document["control"]["socket_path"] = daemon.socket_path
-        document["storage"]["database_path"] = str(
-            daemon.root / "state" / "asmflow.db"
-        )
-        use_bearer_auth(document)
-        daemon.config_path = daemon.root / "asmflow.json"
-        daemon.config_path.write_text(json.dumps(document), encoding="utf-8")
-        daemon.process = subprocess.Popen(
-            [str(daemon_path()), "--config", str(daemon.config_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env={
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "HOME": str(daemon.root),
-                "XDG_RUNTIME_DIR": str(daemon.root / "run"),
-                "XDG_STATE_HOME": str(daemon.root / "state"),
+        daemon = DaemonUnderTest(
+            mutate=use_bearer_auth,
+            extra_env={
                 "ASMFLOW_GATEWAY_TOKEN": sentinel,
                 "OPENAI_API_KEY": sentinel,
             },
         )
         try:
-            daemon._wait_for_socket()
             with daemon.connect() as client:
                 transcript = json.dumps([
                     client.call("system.version"),

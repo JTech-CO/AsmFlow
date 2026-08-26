@@ -59,6 +59,14 @@ def run_python(module: str, build_dir: Path) -> None:
     )
     if result.returncode != 0:
         raise GateError(f"{module} failed:\n{result.stdout}{result.stderr}")
+    # A suite needing a daemon skips when the binary is absent, which is right
+    # for `make check` and wrong here: unittest exits 0 on a run that skipped
+    # everything, so a gate that only reads the exit code would pass without
+    # testing anything. The gate builds first, so a skip means a broken path.
+    if "skipped=" in result.stderr or re.search(r"Ran 0 tests", result.stderr):
+        raise GateError(
+            f"{module} skipped tests under the gate:\n{result.stderr}"
+        )
 
 
 # --- DoD 4 -----------------------------------------------------------------

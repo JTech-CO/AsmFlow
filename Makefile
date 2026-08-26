@@ -124,7 +124,7 @@ TUI_OBJ_DEBUG      := $(call obj_of,$(DEBUG_DIR),$(SRC_TUI_BIN))
 TUI_OBJ_RELEASE    := $(call obj_of,$(RELEASE_DIR),$(SRC_TUI_BIN))
 TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
 
-.PHONY: help check test validate package clean \
+.PHONY: help check check-buildless test validate package clean \
         build build-debug build-release build-tests \
         test-unit test-abi test-alloc-failure test-crash \
         valgrind-unit gdb-abi-smoke abi-audit \
@@ -145,6 +145,7 @@ help:
 	  '  make check          Validate repository and run Python contract tests' \
 	  '  make validate       Validate files, JSON, examples, and policies' \
 	  '  make test           Run Python contract/oracle tests' \
+	  '  make check-buildless  Run `check` as a machine with no build sees it' \
 	  '' \
 	  'Build:' \
 	  '  make build          Debug and release binaries' \
@@ -246,6 +247,17 @@ validate:
 	$(PYTHON) scripts/validate_repo.py
 
 check: validate test
+
+# The M0 gate as a machine that has never built AsmFlow sees it.
+#
+# `make check` must pass with only Python and Make present (HARNESS.md M0),
+# which means every suite needing a binary has to skip rather than error. On a
+# developer machine that has built, plain `make check` cannot show that: the
+# binaries are there. Pointing BUILD_DIR at a path that holds no build
+# reproduces the CI condition locally, which is where it should have been
+# caught the first time.
+check-buildless:
+	BUILD_DIR=$(BUILD_DIR)/none-of-this-exists $(MAKE) check
 
 gate-m0: check
 

@@ -36,8 +36,13 @@ jobs:
           bash -n examples/curl-chat-completions.sh
           bash -n examples/curl-responses.sh
 
+      # This job has no toolchain on purpose: M0's gate must hold on a machine
+      # with Python and Make and nothing else. `check-buildless` pins
+      # BUILD_DIR at a path that holds no build, so the condition is asserted
+      # here rather than inherited from whatever the runner image happens to
+      # contain — and is reproducible on a developer machine that has built.
       - name: Validate repository and run tests
-        run: make check
+        run: make check-buildless
 
   build:
     name: Build and milestone gates

@@ -199,6 +199,7 @@
 | 2026-08-27 | A connection due to close is drained before it is closed (ADR 0010) | `close(2)` with unread bytes queued sends RST, and an RST discards data the peer has not read yet — which is exactly the response explaining the refusal. |
 | 2026-08-27 | Requests are answered from inside the parse, in `on_message_complete` | A pipelined batch is then answered in order by construction, and the outbox ceiling bounds a pipelining client instead of a per-message pause. |
 | 2026-08-27 | Every gateway failure is one row in one catalogue | The contract is a table; making the implementation a table too is what lets the gate check them against each other instead of a reviewer reading both. |
+| 2026-08-27 | A suite that needs a binary skips from the constructor, not from each test class | `make check` is the buildless M0 gate, so a suite needing a daemon must skip there rather than error. Stated per class it was forgotten by all seventeen M5 classes; stated once on the only path that spawns a daemon it cannot be. `make check-buildless` reproduces the condition on a machine that has built. |
 | 2026-08-27 | A generation endpoint answers `unsupported_in_this_build`, not `not_ready` and not an empty completion | "A subsystem is absent from this binary" is a different fact from "a present subsystem is not usable yet", and an empty completion is indistinguishable from a real one. |
 
 ## Last passed gate
