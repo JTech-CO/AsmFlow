@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -41,26 +42,31 @@ jobs:
   build:
     name: Build and milestone gates
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The build runs inside Debian trixie rather than on the runner image.
+    # `libllhttp-dev` is not packaged for Ubuntu 24.04, and pinning the
+    # distribution also means CI compiles against the same library versions the
+    # milestone gates were verified against, rather than whichever the hosted
+    # image happens to carry.
+    container:
+      image: debian:trixie
+    timeout-minutes: 60
     env:
       PYTHONDONTWRITEBYTECODE: "1"
+      DEBIAN_FRONTEND: noninteractive
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-
       - name: Install toolchain
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git \
             nasm gcc binutils make pkg-config \
             libllhttp-dev libcurl4-openssl-dev libsqlite3-dev \
             libjansson-dev libncurses-dev \
-            valgrind gdb
+            valgrind gdb \
+            python3
+
+      - name: Check out repository
+        uses: actions/checkout@v7
 
       - name: Record toolchain versions
         run: make toolchain-versions
