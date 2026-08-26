@@ -44,7 +44,7 @@ SRC_TUI      := $(filter-out $(TUI_ENTRY),$(wildcard src/tui/*.asm))
 # must not link libsqlite3 at all (AGENTS.md invariant 14). The ABI probe exists
 # only for the test harness.
 SRC_FFI_SHARED := src/ffi/json_shim.c
-SRC_FFI_DAEMON := src/ffi/sqlite_shim.c
+SRC_FFI_DAEMON := src/ffi/sqlite_shim.c src/ffi/llhttp_shim.c
 SRC_FFI_TEST   := src/ffi/abi_probe.c
 SRC_FFI_C      := $(SRC_FFI_SHARED) $(SRC_FFI_DAEMON) $(SRC_FFI_TEST)
 
@@ -131,8 +131,10 @@ TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
         test-config test-config-parity test-config-reload-soak \
         valgrind-config \
         test-migrations test-storage test-control test-control-fd-soak \
-        valgrind-storage \
-        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 \
+        valgrind-storage valgrind-http \
+        test-http test-http-contract test-http-limits test-http-smuggling \
+        test-http-fragments test-http-faults test-http-soak \
+        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 \
         toolchain-versions
 
 help:
@@ -165,6 +167,7 @@ help:
 	  '  make gate-m2        ABI, memory, and core primitives' \
 	  '  make gate-m3        JSON, configuration, and secret references' \
 	  '  make gate-m4        SQLite, migrations, and the control plane' \
+	  '  make gate-m5        Gateway HTTP listener and contract' \
 	  '' \
 	  'Packaging:' \
 	  '  make package        Create a source archive under dist/'
@@ -355,6 +358,46 @@ valgrind-storage: build-tests
 gate-m4: gate-m3 test-control-fd-soak valgrind-storage
 	$(PYTHON) scripts/gate_m4.py --build-dir $(BUILD_DIR)
 	@printf 'M4 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M5 targets: the gateway HTTP listener and its contract.
+#
+# Each suite is its own target because each answers a different question, and a
+# failure should say which one without anybody having to read a traceback.
+# HARNESS.md M5 names these commands directly.
+# ---------------------------------------------------------------------------
+test-http: build-tests
+	$(DEBUG_DIR)/asmflow-tests --filter http/ --verbose
+
+test-http-contract: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_http_contract
+
+test-http-limits: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_http_limits
+
+test-http-smuggling: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_http_smuggling
+
+test-http-fragments: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_http_fragments
+
+test-http-faults: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_http_faults
+
+test-http-soak: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_http_soak
+
+valgrind-http: build-tests
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite \
+	  --errors-for-leak-kinds=definite --track-origins=yes \
+	  --error-exitcode=99 \
+	  $(DEBUG_DIR)/asmflow-tests --filter http/
+
+gate-m5: gate-m4 test-http test-http-contract test-http-limits \
+         test-http-smuggling test-http-fragments test-http-faults \
+         test-http-soak valgrind-http
+	$(PYTHON) scripts/gate_m5.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M5 gate passed for AsmFlow %s\n' '$(VERSION)'
 
 package: check
 	@mkdir -p dist

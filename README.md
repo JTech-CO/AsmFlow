@@ -8,13 +8,15 @@ The runtime is designed around NASM x86-64 assembly, a small and explicit C ABI
 boundary, a local OpenAI-compatible gateway, and a supervisor for local and
 remote Model Context Protocol (MCP) servers.
 
-> **Project status:** `0.3.0` — current phase
-> `M5 — Gateway HTTP listener and contract`. `asmflowd` now runs: it loads
-> and validates its configuration, opens SQLite and migrates the schema, binds
-> a mode-0600 control socket, serves the NDJSON control protocol from a single
-> epoll loop, and shuts down cleanly on SIGTERM. Not wired yet: the HTTP data
-> plane, the router, the MCP supervisor, and the console. See
-> [PROGRESS.md](PROGRESS.md) for the authoritative per-milestone state and
+> **Project status:** `0.4.0` — current phase
+> `M6 — Upstream client, Responses/Chat, and streaming`. `asmflowd` serves
+> HTTP: it validates its configuration, migrates SQLite, binds a mode-0600
+> control socket and a TCP listener, and answers `/healthz`, `/readyz`, and
+> `/v1/models` with the configured header, body, JSON, and idle limits applied.
+> `/v1/responses` and `/v1/chat/completions` apply the whole request-side
+> contract and then report `unsupported_in_this_build`, because the upstream
+> client, the router, the MCP supervisor, and the console are not wired yet.
+> See [PROGRESS.md](PROGRESS.md) for the authoritative per-milestone state and
 > [HARNESS.md](HARNESS.md) for the gate each milestone must pass.
 
 ## 한국어 요약
@@ -130,7 +132,7 @@ Each milestone has a gate target that asserts its Definition of Done from
 `HARNESS.md`. Running the latest one runs every earlier one:
 
 ```bash
-make gate-m4
+make gate-m5
 ```
 
 - `gate-m0` — repository structure, JSON contracts, examples, secret policy,
@@ -154,6 +156,14 @@ make gate-m4
   malformed frames are refused safely, a hundred connect/disconnect cycles leak
   no descriptors, no credential reaches the database, and the console links
   neither libsqlite3 nor libcurl.
+- `gate-m5` — the gateway: every leniency switch llhttp offers is explicitly
+  off, a twenty-one case smuggling corpus is refused without a second response,
+  the same request delivered one byte at a time gives the same answer, header
+  and body and JSON and idle limits hold on both sides of their boundaries,
+  slowloris and client-reset traffic leaks no descriptors, a non-loopback
+  listener without an authentication policy refuses to start, ten thousand
+  requests leave the resident set flat, and every error code the daemon can
+  emit is documented in the API contract.
 
 `make help` lists every target.
 

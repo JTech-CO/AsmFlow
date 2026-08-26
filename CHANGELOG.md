@@ -7,6 +7,59 @@ once executable releases begin.
 
 ## [Unreleased]
 
+### Planned
+
+- Upstream client, streaming, and the Responses/Chat data path.
+- Deterministic routing, health state, circuit breaking, and safe fallback.
+- MCP stdio and Streamable HTTP supervision.
+- ncursesw TUI.
+
+## [0.4.0] - 2026-08-27
+
+`asmflowd` serves HTTP. It binds a TCP listener, parses HTTP/1.1 with every
+leniency mode off, applies the configured header, body, JSON, and idle limits,
+authenticates when the listener policy asks it to, and answers `/healthz`,
+`/readyz`, and `/v1/models`. `/v1/responses` and `/v1/chat/completions` apply
+the whole request-side contract and then report that the upstream data plane is
+not in this build. The router, the MCP supervisor, and the console are still
+unwired.
+
+### Added
+
+- The data-plane TCP listener: a bounded connection table, drained writes,
+  keep-alive, and pipelining answered in order.
+- `src/ffi/llhttp_shim.c`, the whole llhttp boundary (ADR 0006). Every leniency
+  switch the library offers is explicitly cleared, and `make gate-m5` reads
+  `llhttp.h` to prove none was missed.
+- Request-smuggling defences stated in assembly rather than inherited from the
+  library's defaults: a repeated `Content-Length`, `Content-Length` together
+  with `Transfer-Encoding`, a transfer coding other than `chunked`, and a
+  repeated credential header are each refused, and the connection closes.
+- Header, body, JSON depth, JSON string, and idle-timeout limits, each applied
+  to what has accumulated rather than to what has completed. An oversized body
+  is refused on its declaration rather than after being read.
+- Bearer and named-header credentials, resolved once from the environment at
+  startup and compared in constant time. The policy applies to every endpoint.
+- `/healthz` (liveness only), `/readyz` (dependencies and route counts), and
+  `/v1/models` (enabled aliases, never the provider behind them).
+- One error catalogue: every failure the gateway can answer with is one row in
+  one table, and `make gate-m5` checks each row against
+  `docs/API_CONTRACT.md` 7.
+- The idle sweep and the lingering close (ADR 0010), so a refusal reaches a
+  client that is still transmitting instead of being destroyed by an RST.
+- `make gate-m5` and six suites: contract, limits, a 21-case smuggling corpus,
+  a one-byte-fragment corpus, a fault suite, and a ten-thousand-request soak.
+
+### Changed
+
+- A listen address must be an IP literal or `localhost`. A hostname is refused
+  at startup, so no resolver decides what the daemon binds.
+- A non-loopback listener with no authentication policy is now refused where the
+  socket is created as well as where the file is read.
+- `docs/API_CONTRACT.md` 7 gains the status rows the gateway actually emits:
+  408, 411, 431, 500, 505, and the `route_disabled` and
+  `unsupported_in_this_build` codes.
+
 ### Fixed
 
 - `routes.get` and `routes.list` crashed the daemon for any route with more
@@ -15,8 +68,19 @@ once executable releases begin.
   array was walked with the runtime's 96-byte stride instead of the record's
   40. The route-target fields are now `RTG_*`, and `make check` fails on any
   macro name defined in two headers, since NASM replaces one silently.
+- Scripts lost their executable bit in the index, because the repository is
+  developed on a filesystem that reports every file as executable. `make check`
+  now reads the mode git recorded rather than the mode the filesystem claims.
 
-### Planned
+### Security
+
+- No response discloses the server software, the upstream host, or a provider
+  identity, and no refusal message contains anything from the request. The
+  gate greps the catalogue for format specifiers to keep it that way.
+- A credential is never echoed, and neither is the name of the environment
+  variable it came from.
+- The console links neither llhttp nor libsqlite3 nor libcurl, and carries no
+  `af_http_*` symbol at all; the gate reads both binaries to confirm it.
 
 - OpenAI-compatible Responses and Chat Completions data plane.
 - Deterministic routing, health state, circuit breaking, and safe fallback.

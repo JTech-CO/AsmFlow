@@ -96,6 +96,8 @@
 %define SYS_prlimit64       302
 %define SYS_getrandom       318
 %define SYS_signalfd4       289
+%define SYS_timerfd_create  283
+%define SYS_timerfd_settime 286
 
 ; ---------------------------------------------------------------------------
 ; Small syscall trampolines.
@@ -175,6 +177,8 @@ AF_SYSCALL pipe2,          SYS_pipe2,          2
 AF_SYSCALL prlimit64,      SYS_prlimit64,      4
 AF_SYSCALL getrandom,      SYS_getrandom,      3
 AF_SYSCALL signalfd4,      SYS_signalfd4,      4
+AF_SYSCALL timerfd_create, SYS_timerfd_create, 2
+AF_SYSCALL timerfd_settime, SYS_timerfd_settime, 4
 
 ; ---------------------------------------------------------------------------
 ; af_sys_open(const char *path, int flags, mode_t mode) -> i64

@@ -180,17 +180,41 @@ that conversion and its parity tests.
 
 | HTTP | Type | Code examples |
 |---:|---|---|
-| 400 | `asmflow_request_error` | `invalid_json`, `invalid_field`, `body_too_large` |
+| 400 | `asmflow_request_error` | `invalid_json`, `invalid_field`, `malformed_request`, `conflicting_framing` |
 | 401 | `asmflow_auth_error` | `missing_token`, `invalid_token` |
 | 404 | `asmflow_route_error` | `unknown_model_alias`, `unknown_path` |
 | 405 | `asmflow_request_error` | `method_not_allowed` |
+| 408 | `asmflow_request_error` | `request_timeout` |
 | 409 | `asmflow_state_error` | `reload_in_progress`, `server_crash_loop` |
+| 411 | `asmflow_request_error` | `length_required` |
 | 413 | `asmflow_request_error` | `body_too_large` |
 | 415 | `asmflow_request_error` | `unsupported_content_type` |
 | 429 | `asmflow_capacity_error` | `route_concurrency_exhausted`, `queue_full` |
+| 431 | `asmflow_request_error` | `headers_too_large` |
+| 500 | `asmflow_state_error` | `internal_error` |
 | 502 | `asmflow_upstream_error` | `invalid_upstream_response`, `upstream_connect_failed` |
-| 503 | `asmflow_routing_error` | `no_eligible_target`, `not_ready` |
+| 503 | `asmflow_routing_error` | `no_eligible_target`, `not_ready`, `route_disabled` |
+| 503 | `asmflow_state_error` | `unsupported_in_this_build` |
 | 504 | `asmflow_upstream_error` | `upstream_timeout` |
+| 505 | `asmflow_request_error` | `unsupported_http_version` |
+
+Notes on the framing and state codes:
+
+- `malformed_request` is a message llhttp refused as syntax, with leniency
+  disabled. `conflicting_framing` is narrower and is AsmFlow's own rule: a
+  repeated `Content-Length`, a `Content-Length` together with a
+  `Transfer-Encoding`, a transfer coding other than `chunked`, or a repeated
+  credential header. Splitting the two means an operator can tell a broken
+  client from a smuggling attempt.
+- `headers_too_large` applies `listener.request_header_max_bytes` to the header
+  section as it accumulates, so an unbounded header stream is refused while it
+  is arriving rather than after it has been stored.
+- `request_timeout` is what a connection is told when it has sat inactive longer
+  than `listener.idle_timeout_ms` with a request part-delivered.
+- `unsupported_in_this_build` reports that a subsystem the request needs is not
+  present in the running binary. It is deliberately distinct from `not_ready`,
+  which says a present subsystem is not yet usable, and from an empty success,
+  which would be indistinguishable from a real answer.
 
 Upstream API error bodies may be passed through when they are valid JSON and below the configured
 limit. AsmFlow still adds its request ID header and records a normalized error class internally.

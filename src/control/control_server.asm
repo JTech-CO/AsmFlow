@@ -26,6 +26,7 @@
 
 %include "asmflow.inc"
 %include "control.inc"
+%include "socket.inc"
 %include "loop.inc"
 %include "runtime.inc"
 
@@ -55,11 +56,6 @@
         extern af_sys_write
         extern af_sys_getsockopt
         extern af_status_from_errno
-
-%define SOCK_NONBLOCK 0x800
-%define SOCK_CLOEXEC  0x80000
-%define SOL_SOCKET    1
-%define SO_PEERCRED   17
 
 %define AF_CTL_READ_CHUNK 65536
 

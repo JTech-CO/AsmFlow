@@ -85,4 +85,13 @@
 %define AF_MAX_MCP_SERVERS      256
 %define AF_MAX_ATTEMPTS         16
 
+; Clock identifiers and the two conversions every duration in the daemon uses.
+; Shared because the clock module and the listener's idle timer both need them,
+; and one name defined in two places is one name whose meaning depends on
+; include order.
+%define CLOCK_REALTIME  0
+%define CLOCK_MONOTONIC 1
+%define NS_PER_SEC      1000000000
+%define NS_PER_MS       1000000
+
 %endif ; ASMFLOW_INC

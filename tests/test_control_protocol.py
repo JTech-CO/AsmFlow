@@ -33,7 +33,7 @@ def daemon_path() -> Path:
 class DaemonUnderTest:
     """A daemon in a private directory, torn down however the test ends."""
 
-    def __init__(self, mutate=None) -> None:
+    def __init__(self, mutate=None, extra_env=None) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "run").mkdir()
@@ -57,6 +57,11 @@ class DaemonUnderTest:
                 "HOME": str(self.root),
                 "XDG_RUNTIME_DIR": str(self.root / "run"),
                 "XDG_STATE_HOME": str(self.root / "state"),
+                # The environment is built rather than inherited, so a secret a
+                # test wants the daemon to resolve has to be passed in on
+                # purpose. That is also the property under test wherever a
+                # secret reference is involved.
+                **(extra_env or {}),
             },
         )
         self._wait_for_socket()

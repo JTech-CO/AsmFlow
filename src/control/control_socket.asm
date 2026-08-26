@@ -26,6 +26,7 @@
 
 %include "asmflow.inc"
 %include "control.inc"
+%include "socket.inc"
 
         extern af_mem_zero
         extern af_mem_copy
@@ -43,16 +44,7 @@
         extern af_sys_getuid
         extern af_status_from_errno
 
-%define AF_UNIX        1
-%define SOCK_STREAM    1
-%define SOCK_NONBLOCK  0x800
-%define SOCK_CLOEXEC   0x80000
-
 ; struct sockaddr_un { sa_family_t sun_family; char sun_path[108]; }
-%define SUN_FAMILY 0
-%define SUN_PATH   2
-%define SUN_SIZE   110
-%define SUN_PATH_MAX 108
 
 ; struct stat is large and layout-sensitive; only two fields are read from it.
 %define STAT_SIZE     144

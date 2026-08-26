@@ -27,6 +27,7 @@
 %include "asmflow.inc"
 %include "config.inc"
 %include "control.inc"
+%include "http.inc"
 %include "db.inc"
 %include "loop.inc"
 %include "runtime.inc"
@@ -74,6 +75,9 @@
         extern af_ctl_server_init
         extern af_ctl_server_shutdown
         extern af_ctl_check_permissions
+
+        extern af_http_server_init
+        extern af_http_server_shutdown
 
         extern af_signal_mask_build
         extern af_signals_block
@@ -125,10 +129,16 @@ msg_internal_failed_len equ $ - msg_internal_failed
 
 msg_listening: db "asmflowd: control socket ready at "
 msg_listening_len equ $ - msg_listening
-msg_no_gateway:
-        db      "asmflowd: the data plane is not wired in this build; the control", 10
-        db      "asmflowd: socket is serving and SIGTERM will shut down cleanly.", 10
-msg_no_gateway_len equ $ - msg_no_gateway
+msg_http_ready: db "asmflowd: gateway listening on "
+msg_http_ready_len equ $ - msg_http_ready
+msg_colon: db ":"
+msg_no_upstream:
+        db      "asmflowd: the upstream client is not wired in this build; the", 10
+        db      "asmflowd: health, readiness, and models endpoints are served and", 10
+        db      "asmflowd: generation requests answer unsupported_in_this_build.", 10
+msg_no_upstream_len equ $ - msg_no_upstream
+msg_listener_failed: db "asmflowd: the gateway listener could not be bound", 10
+msg_listener_failed_len equ $ - msg_listener_failed
 msg_shutdown: db "asmflowd: shutting down", 10
 msg_shutdown_len equ $ - msg_shutdown
 
@@ -487,7 +497,8 @@ af_daemon_on_signal:
 %define CTX_EXIT   (CTX_FLAGS + 8)
 %define CTX_LOOP   (((CTX_EXIT + 8) + 15) & ~15)
 %define CTX_CTL    (CTX_LOOP + LOOP_SIZE)
-%define CTX_SIZE   (CTX_CTL + CTLS_SIZE)
+%define CTX_HTTP   (CTX_CTL + CTLS_SIZE)
+%define CTX_SIZE   (CTX_HTTP + HS_SIZE)
 
 ; Bits in CTX_FLAGS, so teardown knows what was actually acquired.
 %define CTX_F_ARENA   1
@@ -495,6 +506,7 @@ af_daemon_on_signal:
 %define CTX_F_DB      4
 %define CTX_F_LOOP    8
 %define CTX_F_CTL     16
+%define CTX_F_HTTP    32
 
 ; ---------------------------------------------------------------------------
 ; af_daemon_run(const char *config_path_or_null) -> int exit code
@@ -624,6 +636,16 @@ af_daemon_run:
         test    rax, rax
         js      .control_failed
 
+        ; --- 8. the data-plane listener ---
+        lea     rdi, [rbx + CTX_HTTP]
+        mov     rsi, r13
+        lea     rdx, [rbx + CTX_LOOP]
+        lea     rcx, [rbx + CTX_RT]
+        call    af_http_server_init
+        test    rax, rax
+        js      .listener_failed
+        or      qword [rbx + CTX_FLAGS], CTX_F_HTTP
+
         mov     qword [rbx + CTX_RT + RT_READY], 1
         mov     rdi, r13
         call    af_daemon_report_config_summary
@@ -638,9 +660,27 @@ af_daemon_run:
         lea     rsi, [msg_nl]
         mov     rdx, 1
         call    af_out_bytes
+        mov     edi, AF_FD_STDOUT
+        lea     rsi, [msg_http_ready]
+        mov     rdx, msg_http_ready_len
+        call    af_out_bytes
+        mov     edi, AF_FD_STDOUT
+        mov     rsi, [r13 + CFG_LST_HOST]
+        call    af_out_cstr
+        mov     edi, AF_FD_STDOUT
+        lea     rsi, [msg_colon]
+        mov     rdx, 1
+        call    af_out_bytes
+        mov     edi, AF_FD_STDOUT
+        mov     rsi, [r13 + CFG_LST_PORT]
+        call    af_out_u64
+        mov     edi, AF_FD_STDOUT
+        lea     rsi, [msg_nl]
+        mov     rdx, 1
+        call    af_out_bytes
         mov     edi, AF_FD_STDERR
-        lea     rsi, [msg_no_gateway]
-        mov     rdx, msg_no_gateway_len
+        lea     rsi, [msg_no_upstream]
+        mov     rdx, msg_no_upstream_len
         call    af_out_bytes
 
         ; --- 10. serve ---
@@ -675,6 +715,14 @@ af_daemon_run:
         mov     qword [rbx + CTX_EXIT], AF_EXIT_STORAGE
         jmp     .shutdown
 
+.listener_failed:
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_listener_failed]
+        mov     rdx, msg_listener_failed_len
+        call    af_out_bytes
+        mov     qword [rbx + CTX_EXIT], AF_EXIT_LISTENER
+        jmp     .shutdown
+
 .control_failed:
         mov     edi, AF_FD_STDERR
         lea     rsi, [msg_control_failed]
@@ -699,12 +747,20 @@ af_daemon_run:
         call    af_out_bytes
 
         ; Stop accepting first, so no new work arrives while the rest unwinds.
+        ; The data plane goes before the control socket, so an operator watching
+        ; through the console sees the gateway stop rather than losing the
+        ; connection they were watching it through.
+        test    qword [rbx + CTX_FLAGS], CTX_F_HTTP
+        jz      .no_http
+        lea     rdi, [rbx + CTX_HTTP]
+        call    af_http_server_shutdown
+.no_http:
         test    qword [rbx + CTX_FLAGS], CTX_F_CTL
         jz      .no_control
         lea     rdi, [rbx + CTX_CTL]
         call    af_ctl_server_shutdown
 .no_control:
-        ; M5 drains in-flight requests here; M8 stops MCP children here.
+        ; M8 stops MCP children here.
 
         test    qword [rbx + CTX_FLAGS], CTX_F_LOOP
         jz      .no_loop
@@ -766,4 +822,9 @@ af_daemon_context_loop_offset:
         global af_daemon_context_ctl_offset
 af_daemon_context_ctl_offset:
         mov     rax, CTX_CTL
+        ret
+
+        global af_daemon_context_http_offset
+af_daemon_context_http_offset:
+        mov     rax, CTX_HTTP
         ret

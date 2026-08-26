@@ -23,10 +23,6 @@
         extern af_sys_clock_gettime
         extern af_status_from_errno
 
-%define CLOCK_REALTIME  0
-%define CLOCK_MONOTONIC 1
-%define NS_PER_SEC      1000000000
-%define NS_PER_MS       1000000
 
         section .data
 ; -1 means "use the kernel". Any other value is returned verbatim, letting a

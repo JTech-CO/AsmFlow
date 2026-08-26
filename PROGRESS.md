@@ -2,7 +2,7 @@
 
 ## Current phase
 
-`M5 — Gateway HTTP listener and contract`
+`M6 — Upstream client, Responses/Chat, and streaming`
 
 ## Completed
 
@@ -90,20 +90,49 @@
   - 118 assembly tests / 3304 checks; 27 integration tests against a live
     daemon; Valgrind clean on the storage and loop suites.
 
+- 2026-08-27: M5 gateway HTTP listener and contract complete (`make gate-m5`).
+  - `src/ffi/llhttp_shim.c` is the entire llhttp boundary (ADR 0006). Every
+    leniency switch is cleared explicitly rather than left at a default, and
+    the gate reads `llhttp.h` to prove none was missed.
+  - `src/http/`: the TCP listener with a bounded connection table, the callback
+    surface and the request policy applied to it, endpoint dispatch, the
+    credential check, and the response writer.
+  - The smuggling rules are AsmFlow's own statements rather than the library's
+    defaults: a repeated `Content-Length`, `Content-Length` together with
+    `Transfer-Encoding`, a coding other than `chunked`, an absolute-form
+    target, and a repeated credential header are each refused and the
+    connection closes. A 21-case corpus asserts that no second response ever
+    follows.
+  - Limits apply to what accumulates, not to what completes. The header ceiling
+    caps what is fed to the parser while the section is still open, so the
+    count is exact rather than an estimate a large body would spoil.
+  - ADR 0010: one timerfd sweeps the table for idle connections, and a
+    connection due to close is drained first. Closing a socket with unread
+    bytes queued sends RST, and an RST destroys the very response explaining
+    the refusal; the one-byte-fragment corpus found that on its first run.
+  - `/healthz` reads no configuration and opens no handle; `/readyz` reports
+    dependency state and route counts; `/v1/models` lists enabled aliases and
+    nothing about the provider behind them.
+  - Every failure the gateway can answer with is one row in one catalogue,
+    checked against `docs/API_CONTRACT.md` 7 by the gate.
+  - 137 assembly tests / 3574 checks, 77 HTTP integration tests across six
+    suites, a 10,000-request soak with a flat resident set, Valgrind clean.
+
 ## Next actions
 
-1. Add the TCP listener with bounded accept, per-connection state, and the
-   idle timeout.
-2. Wire llhttp through `src/ffi/` for incremental HTTP/1.1 syntax, with
-   leniency disabled.
-3. Apply the header, body, depth, and timeout limits from the configuration,
-   and reject conflicting or duplicated framing headers.
-4. Implement `/healthz`, `/readyz`, `/v1/models`, and the dispatch stubs for
-   `/v1/responses` and `/v1/chat/completions`.
-5. Refuse a non-loopback listener without an authentication policy at bind
-   time as well as at load time.
-6. Add `scripts/gate_m5.py`: a smuggling corpus, a 1-byte-fragment corpus, a
-   slowloris and client-reset fault suite, and a 10,000-request RSS soak.
+1. Wire libcurl's multi interface into the existing epoll loop, so upstream
+   sockets are loop sources like everything else rather than a second reactor.
+2. Implement the provider adapter: rewrite `model` to the configured upstream
+   model, forward the request, and carry the response back.
+3. Stream SSE through without buffering a whole response, applying
+   `limits.sse_event_max_bytes` per event.
+4. Enforce the commit point: once a response byte has reached the client, no
+   fallback may occur (`docs/API_CONTRACT.md` 8).
+5. Replace the `unsupported_in_this_build` answer on `/v1/responses` and
+   `/v1/chat/completions` with real dispatch, keeping every request-side
+   refusal M5 already makes.
+6. Add `scripts/gate_m6.py`: a mock-provider parity corpus, an upstream
+   timeout and disconnect suite, and a streaming soak.
 
 ## Open questions
 
@@ -116,16 +145,21 @@
   `protocol_version` before the first request, as `docs/API_CONTRACT.md` 12
   anticipates, or keep reporting it from `system.version` as it does now. The
   console in M10 is the first thing that would negotiate on it.
-- Whether a bracketed IPv6 literal such as `https://[::1]/v1` should be
-  recognised as loopback. It currently is not, so such a URL needs HTTPS or the
-  explicit insecure-HTTP exception. That is the safe direction, but it is a
-  divergence from what an operator would expect and should be settled before
-  M5 binds a listener.
+- Whether a bracketed IPv6 literal in a *provider* URL, such as
+  `https://[::1]/v1`, should be recognised as loopback. It currently is not, so
+  such a URL needs HTTPS or the explicit insecure-HTTP exception. That is the
+  safe direction but diverges from what an operator would expect, and M6 is
+  where provider URLs start being dialled.
 
 ## Resolved questions
 
 - 2026-08-26: the Jansson boundary uses a minimal C shim rather than hard-coding
   the `json_t` layout in assembly. See ADR 0007.
+- 2026-08-27: the listener address question is settled independently of the
+  provider-URL one. `listener.host` must be an IPv4 literal, an IPv6 literal,
+  or `localhost`, and `::1` both binds and counts as loopback. A hostname is
+  refused, because a daemon whose exposure depends on a DNS answer is a daemon
+  that a DNS answer can expose.
 
 ## Decision log
 
@@ -156,12 +190,24 @@
 | 2026-08-27 | A method whose subsystem is unbuilt returns `unsupported_in_this_build` | An empty result would claim there is nothing to report, which is a different fact from being unable to report. |
 | 2026-08-27 | The daemon's long-lived state is one heap block | The loop's source table and the control server's connection table are kilobytes each; a stack frame would silently overrun, and one zeroed block makes teardown safe from the first failure onward. |
 | 2026-08-27 | The include directory is one macro namespace, checked by `make check` | NASM lets a later `%define` replace an earlier one with no warning, so a name chosen twice makes meaning depend on include order. `RT_SIZE` was defined by both `config.inc` and `runtime.inc`, and the one file including both crashed on any route with two targets. |
+| 2026-08-27 | llhttp's leniency switches are all cleared explicitly, and the gate reads the header to check | Leaving a switch at its default makes "leniency is disabled" a statement about a library version rather than about AsmFlow, and a switch added in a future release would arrive enabled-by-default with nobody noticing. |
+| 2026-08-27 | The smuggling rules are restated in assembly even where llhttp already refuses them | A request-smuggling defence that depends on a library's default is a defence a version bump can remove. The corpus then proves something about this code rather than about llhttp. |
+| 2026-08-27 | An absolute-form request target is refused, not answered as an unknown path | It is the classic desync: a front end routing by `Host` and a back end routing by URI serve two different requests from the same bytes. The form is the problem, so the form is what is refused. |
+| 2026-08-27 | A listen address is an IP literal or `localhost`, never a hostname | Resolving a name to decide what to bind makes the daemon's exposure a function of a DNS answer. |
+| 2026-08-27 | The header ceiling caps what is fed to the parser while the header section is open | Counting consumed bytes is exact only if none of them can be body. Capping the feed makes the count exact instead of an estimate that a large body would turn into a false refusal. |
+| 2026-08-27 | One timerfd sweeps the table rather than a timer per connection (ADR 0010) | A timer per connection doubles the descriptor cost of a connection in order to enforce a property of the table, not of any member of it. |
+| 2026-08-27 | A connection due to close is drained before it is closed (ADR 0010) | `close(2)` with unread bytes queued sends RST, and an RST discards data the peer has not read yet — which is exactly the response explaining the refusal. |
+| 2026-08-27 | Requests are answered from inside the parse, in `on_message_complete` | A pipelined batch is then answered in order by construction, and the outbox ceiling bounds a pipelining client instead of a per-message pause. |
+| 2026-08-27 | Every gateway failure is one row in one catalogue | The contract is a table; making the implementation a table too is what lets the gate check them against each other instead of a reviewer reading both. |
+| 2026-08-27 | A generation endpoint answers `unsupported_in_this_build`, not `not_ready` and not an empty completion | "A subsystem is absent from this binary" is a different fact from "a present subsystem is not usable yet", and an empty completion is indistinguishable from a real one. |
 
 ## Last passed gate
 
-`make gate-m4` at AsmFlow 0.3.0 — M0 through M4 all green:
-118 assembly tests / 3304 checks, 5 crash-scenario tests, 6 configuration
-parity tests over a 90-document corpus, 27 control-protocol integration tests
-against a live daemon, a 10,000-iteration reload soak returning to baseline,
-Valgrind 0 errors and 0 leaks, ABI audit clean over 579 assembly functions
-(401 framed, 177 conforming leaves, 1 documented test-fixture exemption).
+`make gate-m5` at AsmFlow 0.4.0 — M0 through M5 all green:
+137 assembly tests / 3574 checks, 5 crash-scenario tests, 6 configuration
+parity tests over a 90-document corpus, 28 control-protocol integration tests,
+77 HTTP integration tests across six suites (contract, limits, a 21-case
+smuggling corpus, a one-byte-fragment corpus, faults, and soak), a
+10,000-iteration reload soak and a 10,000-request HTTP soak both returning to
+baseline, Valgrind 0 errors and 0 leaks, and an ABI audit clean over every
+assembly function.

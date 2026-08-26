@@ -87,5 +87,8 @@ jobs:
       - name: M4 gate - SQLite, migrations, and the control plane
         run: make gate-m4
 
+      - name: M5 gate - gateway HTTP listener and contract
+        run: make gate-m5
+
       - name: GDB smoke check
         run: make gdb-abi-smoke
