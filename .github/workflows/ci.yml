@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asmflow-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scaffold:
+    name: Repository contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Check shell syntax
+        run: |
+          bash -n scripts/package.sh
+          bash -n examples/curl-chat-completions.sh
+          bash -n examples/curl-responses.sh
+
+      - name: Validate repository and run tests
+        run: make check
+
+  build:
+    name: Build and milestone gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm gcc binutils make pkg-config \
+            libllhttp-dev libcurl4-openssl-dev libsqlite3-dev \
+            libjansson-dev libncurses-dev \
+            valgrind gdb
+
+      - name: Record toolchain versions
+        run: make toolchain-versions
+
+      # CI and local development run the same targets (AGENTS.md; M1 DoD 5).
+      - name: M0 gate - specification and contracts
+        run: make check
+
+      - name: M1 gate - toolchain and build foundation
+        run: make gate-m1
+
+      - name: M2 gate - ABI, memory, and core primitives
+        run: make gate-m2
+
+      - name: M3 gate - JSON, configuration, and secret references
+        run: make gate-m3
+
+      - name: M4 gate - SQLite, migrations, and the control plane
+        run: make gate-m4
+
+      - name: GDB smoke check
+        run: make gdb-abi-smoke

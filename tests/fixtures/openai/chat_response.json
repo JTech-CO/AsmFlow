@@ -1,0 +1,16 @@
+{
+  "id": "chatcmpl_fixture",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "upstream-example",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello."
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}

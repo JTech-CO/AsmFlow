@@ -1,0 +1,10 @@
+{
+  "model": "general",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Say hello."
+    }
+  ],
+  "stream": false
+}

@@ -1,0 +1,5 @@
+{
+  "model": "general",
+  "input": "Say hello.",
+  "stream": true
+}

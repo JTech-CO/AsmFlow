@@ -1,0 +1,26 @@
+{
+  "jsonrpc": "2.0",
+  "id": "tools-1",
+  "result": {
+    "resultType": "complete",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Echo test input",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      }
+    ],
+    "ttlMs": 60000,
+    "cacheScope": "private"
+  }
+}

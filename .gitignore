@@ -1,0 +1,38 @@
+# Build output
+build/
+dist/
+*.o
+*.a
+*.so
+*.d
+asmflow
+asmflow-tui
+
+# Runtime state
+*.db
+*.db-shm
+*.db-wal
+*.sock
+*.pid
+*.log
+
+# Secrets and local overrides
+.env
+.env.*
+!examples/env.example
+asmflow.local.json
+secrets/
+
+# Tooling
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+valgrind-*.log
+coverage/
+asmflowd
+*.map
+*.debug
+*.unstripped

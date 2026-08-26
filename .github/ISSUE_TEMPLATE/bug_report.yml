@@ -1,0 +1,75 @@
+name: Bug report
+description: Report a reproducible defect in AsmFlow or its specification contracts
+title: "bug: "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, bearer tokens, prompts, model outputs, or unredacted MCP payloads.
+        For security vulnerabilities, follow SECURITY.md instead of opening a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: AsmFlow version or commit
+      placeholder: 0.1.0-spec or a full commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Gateway / HTTP / SSE
+        - Provider routing / fallback
+        - MCP stdio supervisor
+        - MCP Streamable HTTP supervisor
+        - SQLite / persistence
+        - Control socket / TUI
+        - Build / CI / packaging
+        - Documentation / contract / fixture
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Linux distribution, kernel, CPU architecture, NASM/compiler/library versions, and relevant launch mode.
+      placeholder: Ubuntu 24.04, Linux 6.x, x86-64, NASM ..., local loopback listener
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Exact redacted steps, fixture, and command needed to reproduce the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Sanitized logs, exit code, backtrace, protocol trace, or test output.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I removed secrets and private prompt/output data.
+          required: true
+        - label: I searched existing issues and reproduced this on the stated commit.
+          required: true
+        - label: This is not a security vulnerability requiring private disclosure.
+          required: true

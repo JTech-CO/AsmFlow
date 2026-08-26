@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "listener": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "auth": {
+      "type": "bearer_env",
+      "env": "ASMFLOW_GATEWAY_TOKEN"
+    },
+    "request_header_max_bytes": 65536,
+    "request_body_max_bytes": 8388608,
+    "idle_timeout_ms": 30000,
+    "expose_unavailable_models": false
+  },
+  "control": {
+    "socket_path": "${XDG_RUNTIME_DIR}/asmflow/control.sock",
+    "mode": "0600",
+    "frame_max_bytes": 1048576
+  },
+  "storage": {
+    "database_path": "${XDG_STATE_HOME}/asmflow/asmflow.db",
+    "journal_mode": "wal",
+    "busy_timeout_ms": 3000,
+    "request_metadata_retention_days": 30,
+    "store_payloads": false
+  },
+  "logging": {
+    "level": "info",
+    "format": "jsonl",
+    "destination": "stderr",
+    "include_request_metadata": true,
+    "include_payloads": false,
+    "redact_headers": [
+      "authorization",
+      "proxy-authorization",
+      "cookie",
+      "set-cookie"
+    ]
+  },
+  "limits": {
+    "max_active_requests": 128,
+    "max_queued_requests": 256,
+    "json_max_depth": 64,
+    "json_string_max_bytes": 4194304,
+    "sse_event_max_bytes": 1048576,
+    "mcp_frame_max_bytes": 4194304,
+    "stderr_line_max_bytes": 65536
+  },
+  "providers": [
+    {
+      "id": "openai-primary",
+      "display_name": "OpenAI Primary",
+      "adapter": "openai_dual",
+      "base_url": "https://api.openai.com/v1",
+      "auth": {
+        "type": "bearer_env",
+        "env": "OPENAI_API_KEY"
+      },
+      "enabled": true,
+      "required": false,
+      "max_concurrency": 16,
+      "timeouts": {
+        "connect_ms": 3000,
+        "request_ms": 180000,
+        "idle_stream_ms": 45000
+      },
+      "capabilities": {
+        "responses": true,
+        "chat_completions": true,
+        "streaming": true,
+        "tools": true,
+        "vision": true,
+        "json_schema": true
+      },
+      "health": {
+        "path": "/models",
+        "interval_ms": 30000,
+        "failure_threshold": 3,
+        "success_threshold": 2,
+        "open_cooldown_ms": 30000
+      }
+    },
+    {
+      "id": "local-ollama",
+      "display_name": "Local Ollama",
+      "adapter": "openai_chat",
+      "base_url": "http://127.0.0.1:11434/v1",
+      "auth": {
+        "type": "none"
+      },
+      "enabled": true,
+      "required": false,
+      "max_concurrency": 4,
+      "timeouts": {
+        "connect_ms": 2000,
+        "request_ms": 120000,
+        "idle_stream_ms": 30000
+      },
+      "capabilities": {
+        "responses": false,
+        "chat_completions": true,
+        "streaming": true,
+        "tools": true,
+        "vision": false,
+        "json_schema": false
+      },
+      "health": {
+        "path": "/models",
+        "interval_ms": 10000,
+        "failure_threshold": 3,
+        "success_threshold": 2,
+        "open_cooldown_ms": 30000
+      }
+    }
+  ],
+  "routes": [
+    {
+      "id": "general-route",
+      "model_alias": "general",
+      "enabled": true,
+      "endpoint_families": [
+        "responses",
+        "chat_completions"
+      ],
+      "policy": "priority",
+      "fallback": {
+        "enabled": true,
+        "max_attempts": 2,
+        "retryable": [
+          "connect_failed",
+          "dns_failed",
+          "connect_timeout",
+          "http_502",
+          "http_503",
+          "http_504"
+        ]
+      },
+      "targets": [
+        {
+          "provider_id": "openai-primary",
+          "upstream_model": "gpt-example",
+          "priority": 10,
+          "weight": 1
+        },
+        {
+          "provider_id": "local-ollama",
+          "upstream_model": "qwen-example",
+          "priority": 20,
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "local-fast-route",
+      "model_alias": "local-fast",
+      "enabled": true,
+      "endpoint_families": [
+        "chat_completions"
+      ],
+      "policy": "least_latency",
+      "fallback": {
+        "enabled": false,
+        "max_attempts": 1,
+        "retryable": []
+      },
+      "targets": [
+        {
+          "provider_id": "local-ollama",
+          "upstream_model": "qwen-example",
+          "priority": 10,
+          "weight": 1
+        }
+      ]
+    }
+  ],
+  "mcp_servers": [
+    {
+      "id": "filesystem",
+      "display_name": "Filesystem MCP",
+      "transport": "stdio",
+      "enabled": false,
+      "required": false,
+      "command": "/usr/bin/node",
+      "args": [
+        "/opt/mcp/filesystem/server.js",
+        "/srv/allowed"
+      ],
+      "cwd": "/opt/mcp/filesystem",
+      "env_allow": [
+        "PATH",
+        "HOME"
+      ],
+      "env": {
+        "FILESYSTEM_TOKEN": {
+          "source": "env",
+          "name": "FILESYSTEM_TOKEN"
+        }
+      },
+      "protocol": {
+        "preferred": "2026-07-28",
+        "legacy": [
+          "2025-11-25"
+        ]
+      },
+      "restart": {
+        "mode": "on_failure",
+        "max_restarts": 3,
+        "window_ms": 60000,
+        "backoff_ms": 1000,
+        "max_backoff_ms": 30000
+      },
+      "startup_timeout_ms": 10000,
+      "shutdown_grace_ms": 3000
+    },
+    {
+      "id": "remote-search",
+      "display_name": "Remote Search MCP",
+      "transport": "streamable_http",
+      "enabled": false,
+      "required": false,
+      "url": "https://mcp.example.invalid/mcp",
+      "auth": {
+        "type": "bearer_env",
+        "env": "REMOTE_MCP_TOKEN"
+      },
+      "protocol": {
+        "preferred": "2026-07-28",
+        "legacy": [
+          "2025-11-25"
+        ]
+      },
+      "timeouts": {
+        "connect_ms": 3000,
+        "request_ms": 30000,
+        "idle_stream_ms": 30000
+      }
+    }
+  ]
+}

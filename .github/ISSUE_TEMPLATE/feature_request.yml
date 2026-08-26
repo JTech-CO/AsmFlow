@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a bounded product, protocol, or developer-experience improvement
+title: "feat: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the operator or contributor problem without prescribing an implementation first.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include CLI/API/TUI behavior and failure semantics where relevant.
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Intended scope
+      options:
+        - Current roadmap
+        - Post-1.0 extension
+        - Documentation or examples only
+        - Protocol compatibility
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain why existing configuration, routing, MCP, or operating-system facilities are insufficient.
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants and risks
+      description: Note effects on assembly-core ownership, C ABI boundaries, secrets, streaming commit rules, or compatibility.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: The request does not require moving product policy into a C shim.
+          required: true
+        - label: The request does not rely on silent post-stream failover.
+          required: true

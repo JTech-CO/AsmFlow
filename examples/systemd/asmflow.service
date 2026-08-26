@@ -1,0 +1,21 @@
+[Unit]
+Description=AsmFlow LLM Gateway and MCP Supervisor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/asmflowd --config %h/.config/asmflow/asmflow.json
+Restart=on-failure
+RestartSec=2s
+UMask=0077
+EnvironmentFile=-%h/.config/asmflow/asmflow.env
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/asmflow %t/asmflow
+LimitCORE=0
+
+[Install]
+WantedBy=default.target

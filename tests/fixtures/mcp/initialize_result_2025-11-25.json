@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {
+      "tools": {}
+    },
+    "serverInfo": {
+      "name": "fixture-legacy-server",
+      "version": "1.0.0"
+    }
+  }
+}
