@@ -75,7 +75,15 @@ class DaemonUnderTest:
                 **(extra_env or {}),
             },
         )
-        self._wait_for_socket()
+        # A daemon that refuses to start is something several tests assert on
+        # purpose, so the failure path has to clean up as thoroughly as the
+        # success path: without this the temporary directory outlives the test
+        # and the process, if it is somehow still alive, is never reaped.
+        try:
+            self._wait_for_socket()
+        except BaseException:
+            self.close()
+            raise
 
     def _wait_for_socket(self, timeout: float = 15.0) -> None:
         deadline = time.monotonic() + timeout

@@ -158,6 +158,15 @@ int af_llhttp_finish(void *storage)
     return (int)llhttp_finish((llhttp_t *)storage);
 }
 
+/* Clear a pause a callback asked for by returning HPE_PAUSED. The parser keeps
+ * its state across the pause, which is the whole reason to use it rather than
+ * stopping the parse: a connection suspended on a provider resumes mid-stream
+ * rather than starting over. */
+void af_llhttp_resume(void *storage)
+{
+    llhttp_resume((llhttp_t *)storage);
+}
+
 int af_llhttp_errno(void *storage)
 {
     return (int)llhttp_get_errno((llhttp_t *)storage);

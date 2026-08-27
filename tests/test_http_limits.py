@@ -85,9 +85,12 @@ class BodyLimitTests(unittest.TestCase):
         payload = json.dumps({"model": "general", "pad": "x" * (BODY_MAX // 2)})
         with Gateway(mutate=limits) as gateway:
             response = gateway.post_json("/v1/responses", payload)
-            self.assertEqual(503, response.status)
-            self.assertEqual(
-                "unsupported_in_this_build", response.json()["error"]["code"]
+            # The assertion is the absence of a ceiling refusal. Where a body
+            # this size goes afterwards is the router's business; that it was
+            # not rejected for its size is this test's.
+            self.assertNotEqual(413, response.status)
+            self.assertNotEqual(
+                "body_too_large", response.json()["error"]["code"]
             )
 
     def test_a_declared_body_over_the_ceiling_is_413(self) -> None:
@@ -139,7 +142,10 @@ class BodyLimitTests(unittest.TestCase):
                 b"Content-Type: application/json\r\n"
                 b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + framed
             )
-            self.assertEqual(503, parse_responses(raw)[0].status)
+            # Not refused for its framing or its size: a chunked body under
+            # the ceiling is a body the gateway accepted and routed.
+            status = parse_responses(raw)[0].status
+            self.assertNotIn(status, (400, 411, 413))
 
 
 class JsonLimitTests(unittest.TestCase):

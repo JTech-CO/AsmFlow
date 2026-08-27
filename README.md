@@ -8,16 +8,17 @@ The runtime is designed around NASM x86-64 assembly, a small and explicit C ABI
 boundary, a local OpenAI-compatible gateway, and a supervisor for local and
 remote Model Context Protocol (MCP) servers.
 
-> **Project status:** `0.4.0` — current phase
-> `M6 — Upstream client, Responses/Chat, and streaming`. `asmflowd` serves
-> HTTP: it validates its configuration, migrates SQLite, binds a mode-0600
-> control socket and a TCP listener, and answers `/healthz`, `/readyz`, and
-> `/v1/models` with the configured header, body, JSON, and idle limits applied.
-> `/v1/responses` and `/v1/chat/completions` apply the whole request-side
-> contract and then report `unsupported_in_this_build`, because the upstream
-> client, the router, the MCP supervisor, and the console are not wired yet.
-> See [PROGRESS.md](PROGRESS.md) for the authoritative per-milestone state and
-> [HARNESS.md](HARNESS.md) for the gate each milestone must pass.
+> **Project status:** `0.5.0` — current phase
+> `M7 — Routing, health, circuit breaking, and fallback`. `asmflowd` is a
+> working gateway: it validates its configuration, migrates SQLite, binds a
+> mode-0600 control socket and a TCP listener, answers `/healthz`, `/readyz`,
+> and `/v1/models`, and forwards `/v1/responses` and `/v1/chat/completions` to
+> a configured provider — buffered or streamed as Server-Sent Events, with
+> backpressure, cancellation, and normalised upstream errors. Target selection
+> is priority-only for now; round-robin, least-latency, health checks, circuit
+> breaking, and fallback are M7. The MCP supervisor and the console are not
+> wired yet. See [PROGRESS.md](PROGRESS.md) for the authoritative per-milestone
+> state and [HARNESS.md](HARNESS.md) for the gate each milestone must pass.
 
 ## 한국어 요약
 
@@ -132,7 +133,7 @@ Each milestone has a gate target that asserts its Definition of Done from
 `HARNESS.md`. Running the latest one runs every earlier one:
 
 ```bash
-make gate-m5
+make gate-m6
 ```
 
 - `gate-m0` — repository structure, JSON contracts, examples, secret policy,
@@ -164,6 +165,13 @@ make gate-m5
   listener without an authentication policy refuses to start, ten thousand
   requests leave the resident set flat, and every error code the daemon can
   emit is documented in the API contract.
+- `gate-m6` — the upstream client: a request round-trips to a provider with
+  only `model` rewritten, unknown fields and Unicode survive unchanged, the
+  same SSE stream delivered at eleven packet sizes produces identical bytes, a
+  slow client pauses the upstream rather than growing a buffer, a client that
+  disconnects cancels the transfer it started, every libcurl failure becomes a
+  documented error class, no security-relevant transfer option is left to a
+  libcurl default, and libcurl never owns the wait.
 
 `make help` lists every target.
 

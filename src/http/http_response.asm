@@ -44,6 +44,7 @@ s_crlf:         db 13, 10, 0
 s_ctype_json:   db "Content-Type: application/json", 13, 10, 0
 s_ctype_sse:    db "Content-Type: text/event-stream", 13, 10, 0
 s_clen:         db "Content-Length: ", 0
+s_chunked:      db "Transfer-Encoding: chunked", 13, 10, 0
 s_nosniff:      db "X-Content-Type-Options: nosniff", 13, 10, 0
 s_nostore:      db "Cache-Control: no-store", 13, 10, 0
 s_reqid:        db "X-AsmFlow-Request-Id: ", 0
@@ -65,7 +66,10 @@ r_413: db "Content Too Large", 0
 r_415: db "Unsupported Media Type", 0
 r_431: db "Request Header Fields Too Large", 0
 r_500: db "Internal Server Error", 0
+r_429: db "Too Many Requests", 0
+r_502: db "Bad Gateway", 0
 r_503: db "Service Unavailable", 0
+r_504: db "Gateway Timeout", 0
 r_505: db "HTTP Version Not Supported", 0
 r_other: db "Error", 0
 
@@ -119,6 +123,18 @@ e_version:           db "unsupported_http_version", 0
 m_version:           db "This listener speaks HTTP/1.1.", 0
 e_internal:          db "internal_error", 0
 m_internal:          db "The request could not be completed.", 0
+e_up_connect:        db "upstream_connect_failed", 0
+m_up_connect:        db "The upstream provider could not be reached.", 0
+e_up_tls:            db "upstream_tls_failed", 0
+m_up_tls:            db "The upstream provider's TLS session could not be established.", 0
+e_up_timeout:        db "upstream_timeout", 0
+m_up_timeout:        db "The upstream provider did not answer within the configured timeout.", 0
+e_up_invalid:        db "invalid_upstream_response", 0
+m_up_invalid:        db "The upstream provider returned a response AsmFlow could not forward.", 0
+e_no_target:         db "no_eligible_target", 0
+m_no_target:         db "No eligible upstream target for that model alias.", 0
+e_capacity:          db "route_concurrency_exhausted", 0
+m_capacity:          db "Too many requests are already in flight upstream.", 0
 
 p_model: db "model", 0
 
@@ -144,8 +160,11 @@ status_table:
         dq 413, r_413
         dq 415, r_415
         dq 431, r_431
+        dq 429, r_429
         dq 500, r_500
+        dq 502, r_502
         dq 503, r_503
+        dq 504, r_504
         dq 505, r_505
 status_table_end:
 %define STATUS_COUNT ((status_table_end - status_table) / 16)
@@ -185,6 +204,12 @@ af_http_error_table:
         dq 503, AF_ERRCLASS_STATE,    e_unsupported_build, m_unsupported_build, 0,       0, 0
         dq 505, AF_ERRCLASS_REQUEST,  e_version,           m_version,           0,       0, 0
         dq 500, AF_ERRCLASS_STATE,    e_internal,          m_internal,          0,       0, 0
+        dq 502, AF_ERRCLASS_UPSTREAM, e_up_connect,        m_up_connect,        0,       1, 0
+        dq 502, AF_ERRCLASS_UPSTREAM, e_up_tls,            m_up_tls,            0,       0, 0
+        dq 504, AF_ERRCLASS_UPSTREAM, e_up_timeout,        m_up_timeout,        0,       1, 0
+        dq 502, AF_ERRCLASS_UPSTREAM, e_up_invalid,        m_up_invalid,        0,       0, 0
+        dq 503, AF_ERRCLASS_ROUTING,  e_no_target,         m_no_target,         p_model, 1, 0
+        dq 429, AF_ERRCLASS_CAPACITY, e_capacity,          m_capacity,          0,       1, 0
 af_http_error_table_end:
 
         section .text
@@ -314,6 +339,12 @@ af_http_write_head:
         test    rax, rax
         js      .done
 
+        ; A streamed response cannot state a length: the head is written
+        ; before the first upstream byte has arrived. Chunked framing is what
+        ; lets the connection stay reusable afterwards, so the choice between
+        ; the two is made here rather than left to the caller to remember.
+        test    qword [rsp + 32], AF_HEAD_CHUNKED
+        jnz     .chunked
         mov     rdi, rbx
         lea     rsi, [s_clen]
         call    af_buf_append_cstr
@@ -329,6 +360,14 @@ af_http_write_head:
         call    af_buf_append_cstr
         test    rax, rax
         js      .done
+        jmp     .framing_done
+.chunked:
+        mov     rdi, rbx
+        lea     rsi, [s_chunked]
+        call    af_buf_append_cstr
+        test    rax, rax
+        js      .done
+.framing_done:
 
         ; nosniff on every response. A client that guesses a media type from
         ; the bytes of an error body is a client steerable by whatever produced

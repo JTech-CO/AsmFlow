@@ -41,6 +41,13 @@
         extern af_buf_init
         extern af_buf_append
         extern af_buf_free
+
+        ; The provider engine, reached only through these three points:
+        ; a connection that is closing cancels its transfer, a drained
+        ; outbox resumes a paused one, and nothing else in this file knows
+        ; an upstream request exists.
+        extern af_prov_conn_detach
+        extern af_prov_conn_drained
         extern af_buf_clear
         extern af_buf_data
         extern af_buf_len
@@ -70,6 +77,7 @@
         extern af_llhttp_parser_size
         extern af_llhttp_request_init
         extern af_llhttp_execute
+        extern af_llhttp_resume
         extern af_llhttp_errno
         extern af_llhttp_error_offset
 
@@ -772,6 +780,16 @@ af_http_conn_release:
         test    rdi, rdi
         jz      .done
         mov     rbx, rdi
+
+        ; A client that goes away cancels its upstream request. Without this a
+        ; provider would keep generating — and keep billing — for a response
+        ; nobody is left to read (HARNESS.md M6 DoD 5).
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jz      .no_exchange
+        mov     rdi, rbx
+        call    af_prov_conn_detach
+.no_exchange:
+
         mov     rax, [rbx + HC_FD]
         cmp     rax, 0
         jl      .buffers
@@ -1015,6 +1033,11 @@ af_http_on_timer:
         mov     r15, rax
         cmp     qword [r15 + HC_FD], 0
         jl      .next
+        ; A connection waiting on a provider is not idle, it is blocked, and
+        ; the timeout that applies to it is the provider's own. Sweeping it here
+        ; would answer 408 to a client whose request is still being worked on.
+        test    qword [r15 + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .next
         mov     rax, r13
         sub     rax, [r15 + HC_LAST_ACTIVE_NS]
         jc      .next                           ; the clock moved backwards
@@ -1106,6 +1129,8 @@ af_http_on_conn:
         ; The peer is done sending. Whatever is already queued still goes out.
         cmp     r12, AF_E_AGAIN
         je      .maybe_close
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .cancel_and_close
         or      qword [rbx + HC_FLAGS], HC_F_CLOSING
         mov     rdi, rbx
         call    af_http_conn_feed
@@ -1116,11 +1141,19 @@ af_http_on_conn:
         ; The peer hung up. Whatever is already queued is still attempted, but
         ; this connection is over either way: without setting the flag the slot
         ; would stay registered for a socket nobody is on the other end of.
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .cancel_and_close
         or      qword [rbx + HC_FLAGS], HC_F_CLOSING
         mov     rdi, rbx
         call    af_http_conn_flush
 
 .maybe_close:
+        ; A connection whose exchange has not answered yet is not finished,
+        ; whatever else has been decided about it. Shutting the write side down
+        ; here — which is what begin_drain does — would close the channel the
+        ; response is still due to arrive on.
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .done
         test    qword [rbx + HC_FLAGS], HC_F_CLOSING
         jz      .done
         lea     rdi, [rbx + HC_OUTBOX]
@@ -1132,6 +1165,21 @@ af_http_on_conn:
         test    rax, rax
         jz      .done                           ; still draining the peer
 .close:
+        mov     rdi, rbx
+        call    af_http_conn_release
+        AF_LEAVE
+
+.cancel_and_close:
+        ; HTTP/1.1 has no exchange in which a client sends FIN and then waits
+        ; for the response, so a peer that has closed its write side has
+        ; finished with this connection. Continuing to pay a provider to
+        ; generate tokens for it would be paying for output nobody will read
+        ; (HARNESS.md M6 DoD 5), so the transfer is cancelled and the slot goes
+        ; back without the lingering close a queued response would deserve —
+        ; there is no queued response.
+        mov     rdi, rbx
+        call    af_prov_conn_detach
+        or      qword [rbx + HC_FLAGS], HC_F_CLOSING
         mov     rdi, rbx
         call    af_http_conn_release
 .done:
@@ -1265,6 +1313,13 @@ af_http_conn_feed:
         AF_ENTER 64
         mov     rbx, rdi
 
+        ; A pipelined request that arrived while an upstream call is in flight
+        ; waits in the inbox. Parsing it now would dispatch a second request on
+        ; a connection whose first response has not been written, and responses
+        ; on one connection are ordered by construction (ADR 0010).
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .nothing
+
         lea     rdi, [rbx + HC_INBOX]
         call    af_buf_len
         test    rax, rax
@@ -1342,6 +1397,12 @@ af_http_conn_feed:
         mov     rsi, [rsp + 24]
         call    af_buf_consume
 
+        ; A pause is not an error either: the dispatcher suspended this
+        ; connection on a provider, and what is left in the inbox is a
+        ; pipelined request that will be parsed once the exchange answers.
+        cmp     dword [rsp + 16], AF_HPE_PAUSED
+        je      .ok_stop
+
         ; A message that ended with the connection closing is not an error: the
         ; dispatcher asked for the parse to stop.
         test    qword [rbx + HC_FLAGS], HC_F_CLOSING
@@ -1390,6 +1451,58 @@ af_http_conn_feed:
         AF_LEAVE_OK
 .nothing:
         AF_LEAVE_OK
+
+; ---------------------------------------------------------------------------
+; af_http_conn_resume(af_http_conn *c) -> void
+;
+; Called when an upstream exchange has finished and written its response. The
+; connection is answerable again, so anything a pipelining client sent while it
+; was suspended is parsed now, and a connection that was only being kept open
+; for the exchange is closed.
+;
+; Reading the flag before feeding matters: af_http_conn_feed refuses to parse a
+; suspended connection, and this is the one place that knows the suspension is
+; over.
+; ---------------------------------------------------------------------------
+        global af_http_conn_resume
+af_http_conn_resume:
+        AF_ENTER 16
+        test    rdi, rdi
+        jz      .done
+        mov     rbx, rdi
+        cmp     qword [rbx + HC_FD], 0
+        jl      .done
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .done
+
+        ; The response that just went out is this message's last word, so the
+        ; next message starts clean.
+        and     qword [rbx + HC_FLAGS], ~HC_F_RESPONDED
+        mov     rdi, rbx
+        call    af_http_touch
+
+        ; Lift the pause the message-complete callback asked for. The parser
+        ; kept its state across it, so anything a pipelining client sent while
+        ; the connection was suspended is parsed from where it stopped.
+        lea     rdi, [rbx + HC_PARSER]
+        call    af_llhttp_resume
+
+        test    qword [rbx + HC_FLAGS], HC_F_KEEP_ALIVE
+        jz      .drain_and_close
+
+        mov     rdi, rbx
+        call    af_http_conn_feed
+        test    rax, rax
+        js      .drain_and_close
+        mov     rdi, rbx
+        call    af_http_conn_flush
+        AF_LEAVE
+
+.drain_and_close:
+        mov     rdi, rbx
+        call    af_http_begin_drain
+.done:
+        AF_LEAVE
 
 ; ---------------------------------------------------------------------------
 ; af_http_count_header_bytes(af_http_conn *c, u64 consumed) -> af_status
@@ -1464,6 +1577,11 @@ af_http_conn_flush:
         lea     rdi, [rbx + HC_OUTBOX]
         call    af_buf_clear
         mov     qword [rbx + HC_OUT_CURSOR], 0
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jz      .no_resume
+        mov     rdi, rbx
+        call    af_prov_conn_drained
+.no_resume:
         mov     r12, [rbx + HC_SERVER]
         test    r12, r12
         jz      .done_ok
@@ -1474,6 +1592,23 @@ af_http_conn_flush:
         jmp     .done_ok
 
 .would_block:
+        ; Drop what has already gone out. Without this the outbox holds every
+        ; byte of a stream until the stream ends, which is the opposite of what
+        ; a bounded outbox is for; with it, the buffer holds what is pending
+        ; plus at most one compaction threshold.
+        mov     rax, [rbx + HC_OUT_CURSOR]
+        cmp     rax, AF_HTTP_OUTBOX_COMPACT
+        jb      .no_compact
+        lea     rdi, [rbx + HC_OUTBOX]
+        mov     rsi, rax
+        call    af_buf_consume
+        mov     qword [rbx + HC_OUT_CURSOR], 0
+.no_compact:
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jz      .no_resume_pending
+        mov     rdi, rbx
+        call    af_prov_conn_drained
+.no_resume_pending:
         mov     r12, [rbx + HC_SERVER]
         test    r12, r12
         jz      .done_ok

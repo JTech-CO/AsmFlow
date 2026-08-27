@@ -21,6 +21,7 @@
 ;   +72  config_arena  af_arena * holding the resolved default path
 ;   +80  reload_count
 ;   +88  last_error    af_status of the most recent reload attempt
+;   +96  prov          af_prov_engine * (NULL until the engine is up)
 %define RT_CONFIG        0
 %define RT_DB            8
 %define RT_LOOP          16
@@ -33,6 +34,7 @@
 %define RT_CONFIG_ARENA  72
 %define RT_RELOAD_COUNT  80
 %define RT_LAST_ERROR    88
-%define RT_SIZE          96
+%define RT_PROV          96
+%define RT_SIZE          104
 
 %endif ; ASMFLOW_RUNTIME_INC

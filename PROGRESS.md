@@ -2,7 +2,7 @@
 
 ## Current phase
 
-`M6 — Upstream client, Responses/Chat, and streaming`
+`M7 — Routing, health, circuit breaking, and fallback`
 
 ## Completed
 
@@ -118,21 +118,51 @@
   - 137 assembly tests / 3574 checks, 77 HTTP integration tests across six
     suites, a 10,000-request soak with a flat resident set, Valgrind clean.
 
+- 2026-08-27: M6 upstream client, Responses/Chat, and streaming complete
+  (`make gate-m6`).
+  - `src/ffi/curl_shim.c` is the whole libcurl boundary, driven through
+    `curl_multi_socket_action` from AsmFlow's own epoll loop (ADR 0011). The
+    two libcurl entry points that own the wait are absent from the shim, and
+    the gate checks for their absence: using one would give the daemon a second
+    reactor, and the symptom would be a control socket that stops answering
+    while a provider is slow.
+  - A generation request now suspends rather than being answered inside the
+    dispatcher. The connection is marked, the idle sweep leaves it alone, the
+    parser is not fed again until the exchange finishes, and a pipelined next
+    request waits in the inbox — so responses on one connection stay ordered by
+    construction.
+  - Exactly one field of a request body is changed. Jansson re-emits the
+    document because a JSON real has no decimal text recoverable from a double,
+    and re-encoding one would change what was asked for to make the plumbing
+    tidier.
+  - The SSE framer finds event boundaries and never parses an event. Nothing
+    decodes UTF-8, so a character split across two callbacks cannot be
+    corrupted; the same stream at eleven packet sizes produces identical bytes.
+    The one genuinely ambiguous case — a buffer ending in a bare CR — waits for
+    the next byte rather than guessing, because guessing splits one event into
+    two.
+  - Backpressure is checked before bytes are consumed, because libcurl
+    re-delivers what a paused callback did not take.
+  - A client that disconnects cancels its transfer immediately. Refusing the
+    next write callback is enough for a stream and not for anything else: a
+    request whose provider has gone quiet produces no callbacks at all.
+  - 30 assembly tests / 115 checks for `prov/`, 68 provider integration tests
+    across four suites, Valgrind clean.
+
 ## Next actions
 
-1. Wire libcurl's multi interface into the existing epoll loop, so upstream
-   sockets are loop sources like everything else rather than a second reactor.
-2. Implement the provider adapter: rewrite `model` to the configured upstream
-   model, forward the request, and carry the response back.
-3. Stream SSE through without buffering a whole response, applying
-   `limits.sse_event_max_bytes` per event.
-4. Enforce the commit point: once a response byte has reached the client, no
-   fallback may occur (`docs/API_CONTRACT.md` 8).
-5. Replace the `unsupported_in_this_build` answer on `/v1/responses` and
-   `/v1/chat/completions` with real dispatch, keeping every request-side
-   refusal M5 already makes.
-6. Add `scripts/gate_m6.py`: a mock-provider parity corpus, an upstream
-   timeout and disconnect suite, and a streaming soak.
+1. Implement the routing policies the schema already names: round-robin and
+   EWMA least-latency alongside the priority ordering M6 uses.
+2. Add health checking against each provider's configured `health.path`, and
+   the circuit breaker its thresholds and cooldown describe.
+3. Implement pre-commit fallback: `fallback.retryable` already maps onto the
+   `AF_E_UP_*` classes and `af_prov_is_retryable` already answers the question;
+   what is missing is the attempt loop and its `max_attempts` bound.
+4. Enforce `max_concurrency` per provider, alongside the existing global
+   `limits.max_active_requests`.
+5. Add `scripts/gate_m7.py`: a routing parity corpus against
+   `tests/route_oracle.py`, a breaker state-machine suite, and a fallback
+   corpus that asserts no fallback ever occurs after the commit point.
 
 ## Open questions
 
@@ -148,8 +178,14 @@
 - Whether a bracketed IPv6 literal in a *provider* URL, such as
   `https://[::1]/v1`, should be recognised as loopback. It currently is not, so
   such a URL needs HTTPS or the explicit insecure-HTTP exception. That is the
-  safe direction but diverges from what an operator would expect, and M6 is
-  where provider URLs start being dialled.
+  safe direction but diverges from what an operator would expect.
+- Whether the exchange table should grow beyond 64 slots. It is a hard ceiling
+  independent of `limits.max_active_requests`, which can lower it and cannot
+  raise it. Sixty-four upstream sockets plus 128 clients fits the loop's
+  256-source table with room; raising either would need both revisited.
+- Whether a provider credential should be readable from a file as well as an
+  environment variable. It is read at request time rather than cached on the
+  snapshot, so the read is already pluggable; nothing has asked for it yet.
 
 ## Resolved questions
 
@@ -199,16 +235,24 @@
 | 2026-08-27 | A connection due to close is drained before it is closed (ADR 0010) | `close(2)` with unread bytes queued sends RST, and an RST discards data the peer has not read yet — which is exactly the response explaining the refusal. |
 | 2026-08-27 | Requests are answered from inside the parse, in `on_message_complete` | A pipelined batch is then answered in order by construction, and the outbox ceiling bounds a pipelining client instead of a per-message pause. |
 | 2026-08-27 | Every gateway failure is one row in one catalogue | The contract is a table; making the implementation a table too is what lets the gate check them against each other instead of a reviewer reading both. |
+| 2026-08-27 | libcurl is driven by AsmFlow's loop rather than owning the wait (ADR 0011) | The two multi-interface entry points that block would make libcurl the reactor, and a daemon with two loops has no single answer to what it is waiting for. `curl_multi_socket_action` hands the wait back, and an upstream socket becomes an ordinary loop source. |
+| 2026-08-27 | A timer request of zero milliseconds arms the timerfd for one nanosecond | libcurl forbids re-entering `curl_multi_socket_action` from inside a callback it is making, and "call me back immediately" is the request that invites exactly that. Going through the loop says the same thing without the re-entry. |
+| 2026-08-27 | An upstream descriptor is deregistered, never closed | libcurl owns those sockets and reuses connections across transfers. Closing one would take a connection out from under a live transfer, and the fault would surface on whichever later request reused the descriptor number. |
+| 2026-08-27 | The request body is re-emitted by Jansson, not by AsmFlow's writer | Our writer is exact for everything it can name, but a JSON real has no decimal text recoverable from a double. Re-encoding one would change a request's meaning in order to make the plumbing tidier. |
+| 2026-08-27 | The SSE framer finds boundaries and never parses an event | Nothing decodes UTF-8, so a character split across two callbacks cannot be corrupted — there is no decode to get wrong. It also keeps AsmFlow a gateway: a component that understood the payload could change it. |
+| 2026-08-27 | A buffer ending in a bare CR is undecidable, and the scanner says so | That CR is either a line ending or the first half of a CRLF still in flight. Guessing splits one event into two, and the split is invisible until a client renders it. |
+| 2026-08-27 | The per-event ceiling is enforced by accumulating an event before forwarding it | A limit on a unit only means something if the unit exists. Forwarding as bytes arrive would put half an oversized event on the wire before the limit was reached, which is a limit that reports rather than defends. |
+| 2026-08-27 | Backpressure is decided before any byte is consumed | libcurl re-delivers whatever a paused write callback did not take, so a callback that buffered and then paused would deliver the same bytes twice. |
+| 2026-08-27 | A cancelled exchange is torn down at once, not flagged for later | Refusing the next write callback is enough for a stream, which produces callbacks. A request whose provider has accepted it and gone quiet produces none, so a flag would sit there until the provider's own timeout — with the client gone and the tokens still being generated. |
+| 2026-08-27 | The outbox is compacted as it drains | A buffer with a write cursor keeps sent bytes until it empties completely, which for a stream is never until the stream ends. Without compaction a bounded outbox would have to hold the whole stream, which is the opposite of what bounding it is for. |
+| 2026-08-27 | An upstream status classifies the response; it does not decide whether to send one | The transport succeeding means there IS a response. Turning every non-2xx into AsmFlow's own 502 would throw away the provider's explanation, which is usually the more useful of the two. |
+| 2026-08-27 | Streaming is framed with chunked transfer coding | A streamed response has no length to state when its head is written. `Connection: close` plus a raw stream would work and would end the connection; chunked keeps it reusable. |
 | 2026-08-27 | A suite that needs a binary skips from the constructor, not from each test class | `make check` is the buildless M0 gate, so a suite needing a daemon must skip there rather than error. Stated per class it was forgotten by all seventeen M5 classes; stated once on the only path that spawns a daemon it cannot be. `make check-buildless` reproduces the condition on a machine that has built. |
 | 2026-08-27 | A generation endpoint answers `unsupported_in_this_build`, not `not_ready` and not an empty completion | "A subsystem is absent from this binary" is a different fact from "a present subsystem is not usable yet", and an empty completion is indistinguishable from a real one. |
 
 ## Last passed gate
 
-`make gate-m5` at AsmFlow 0.4.0 — M0 through M5 all green:
-137 assembly tests / 3574 checks, 5 crash-scenario tests, 6 configuration
-parity tests over a 90-document corpus, 28 control-protocol integration tests,
-77 HTTP integration tests across six suites (contract, limits, a 21-case
-smuggling corpus, a one-byte-fragment corpus, faults, and soak), a
-10,000-iteration reload soak and a 10,000-request HTTP soak both returning to
-baseline, Valgrind 0 errors and 0 leaks, and an ABI audit clean over every
-assembly function.
+`make gate-m6` at AsmFlow 0.5.0 — M0 through M6 all green.
+See the run recorded in `CHANGELOG.md`; the counts are printed by the gate
+itself rather than restated here, because a number copied by hand is a number
+that goes stale.

@@ -72,8 +72,11 @@ def parse_responses(raw: bytes) -> list:
         for line in lines[1:]:
             name, _, value = line.decode("latin-1").partition(":")
             headers[name.strip().lower()] = value.strip()
-        length = int(headers.get("content-length", 0))
-        body, rest = rest[:length], rest[length:]
+        if headers.get("transfer-encoding", "").lower() == "chunked":
+            body, rest = decode_chunked(rest)
+        else:
+            length = int(headers.get("content-length", 0))
+            body, rest = rest[:length], rest[length:]
         out.append(
             Response(
                 status=int(parts[1]),
@@ -84,6 +87,128 @@ def parse_responses(raw: bytes) -> list:
             )
         )
     return out
+
+
+class Incomplete(Exception):
+    """Not enough bytes yet — meaningful only while a connection is open."""
+
+
+def decode_chunked(data: bytes, partial_ok: bool = False):
+    """Decode a chunked body, returning it and whatever followed.
+
+    Written out for the same reason the rest of this parser is: a streamed
+    response is framed by AsmFlow, and a decoder that tolerated a malformed
+    chunk size or a missing terminator would hide the thing under test.
+
+    Whether a short body is a defect depends on the caller. Reading until the
+    peer closes, it is: a stream that ended without its terminating chunk lost
+    data, and that is exactly the fault the slow-reader test found. Reading one
+    response off a connection that stays open, it just means more is coming, so
+    `partial_ok` raises Incomplete instead.
+    """
+    body = b""
+    rest = data
+    while True:
+        split = rest.find(CRLF)
+        if split < 0:
+            if partial_ok:
+                raise Incomplete()
+            raise AssertionError(f"chunked body ended mid-header: {rest[:64]!r}")
+        header = rest[:split]
+        # A chunk extension is legal but AsmFlow emits none, so seeing one
+        # means something other than AsmFlow framed this response.
+        assert b";" not in header, f"unexpected chunk extension: {header!r}"
+        size = int(header, 16)
+        rest = rest[split + 2 :]
+        if size == 0:
+            if len(rest) < 2:
+                if partial_ok:
+                    raise Incomplete()
+                raise AssertionError(f"missing final CRLF: {rest[:16]!r}")
+            assert rest.startswith(CRLF), f"missing final CRLF: {rest[:16]!r}"
+            return body, rest[2:]
+        if len(rest) < size + 2:
+            if partial_ok:
+                raise Incomplete()
+            raise AssertionError("chunked body is truncated")
+        body += rest[:size]
+        assert rest[size : size + 2] == CRLF, "chunk not terminated by CRLF"
+        rest = rest[size + 2 :]
+
+
+def parse_prefix(raw: bytes, partial_ok: bool = True):
+    """One response off the front of `raw`, and the rest.
+
+    Returns (None, raw) when the response is not complete yet.
+    """
+    split = raw.find(CRLF + CRLF)
+    if split < 0:
+        if partial_ok:
+            return None, raw
+        raise AssertionError(f"no header terminator in {raw[:120]!r}")
+    head, rest = raw[:split], raw[split + 4 :]
+    lines = head.split(CRLF)
+    status_line = lines[0].decode("latin-1")
+    parts = status_line.split(" ", 2)
+    if len(parts) < 2 or not parts[0].startswith("HTTP/"):
+        raise AssertionError(f"not a status line: {status_line!r}")
+    headers = {}
+    for line in lines[1:]:
+        name, _, value = line.decode("latin-1").partition(":")
+        headers[name.strip().lower()] = value.strip()
+
+    if headers.get("transfer-encoding", "").lower() == "chunked":
+        try:
+            body, rest = decode_chunked(rest, partial_ok=partial_ok)
+        except Incomplete:
+            return None, raw
+    else:
+        length = int(headers.get("content-length", 0))
+        if len(rest) < length:
+            if partial_ok:
+                return None, raw
+            raise AssertionError("body is shorter than Content-Length")
+        body, rest = rest[:length], rest[length:]
+
+    return (
+        Response(
+            status=int(parts[1]),
+            reason=parts[2] if len(parts) > 2 else "",
+            headers=headers,
+            body=body,
+            raw=head,
+        ),
+        rest,
+    )
+
+
+class ResponseStream:
+    """Responses read one at a time from a connection that stays open.
+
+    `read_until_quiet` cannot be used on a keep-alive connection: there is no
+    close to stop at, so it would wait out the timeout for every request and a
+    pipelining test would take minutes. The leftover bytes live here rather
+    than on the socket, which has no room for an attribute.
+    """
+
+    def __init__(self, sock, timeout: float = 20.0) -> None:
+        self.sock = sock
+        self.sock.settimeout(timeout)
+        self.buffered = b""
+
+    def next(self) -> Response:
+        while True:
+            response, rest = parse_prefix(self.buffered)
+            if response is not None:
+                self.buffered = rest
+                return response
+            piece = self.sock.recv(65536)
+            if not piece:
+                raise AssertionError(
+                    "the connection closed with a partial response: "
+                    f"{self.buffered[:200]!r}"
+                )
+            self.buffered += piece
 
 
 def send_raw(port: int, payload: bytes, timeout: float = 5.0, host: str = "127.0.0.1") -> bytes:

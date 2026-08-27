@@ -141,9 +141,23 @@ JSON library and adapter can round-trip them safely.
 Streaming:
 
 - `Content-Type: text/event-stream`
+- `Transfer-Encoding: chunked`. A streamed response has no length to state when
+  its head is written, and chunked framing is what keeps the connection
+  reusable afterwards.
 - semantic SSE event names and data are forwarded.
 - AsmFlow may add only transport comments or headers defined by this contract.
 - AsmFlow does not merge streams from multiple providers.
+- Events are forwarded byte for byte, in order, including their line
+  terminators. AsmFlow finds event boundaries; it does not parse events, and it
+  never re-encodes one. The same stream delivered in different packet sizes
+  produces the same response.
+- `limits.sse_event_max_bytes` applies to each event as a unit. An event at the
+  limit is delivered; one byte more ends the stream, and no part of the refused
+  event reaches the client.
+- The framing of the response follows what the provider sent, not what the
+  client asked for. A provider that answers `stream: true` with a plain JSON
+  body is relayed as a plain JSON body, because wrapping it in event framing
+  would be AsmFlow inventing a stream nobody sent.
 
 ## 6. Chat Completions endpoint
 
@@ -192,7 +206,7 @@ that conversion and its parity tests.
 | 429 | `asmflow_capacity_error` | `route_concurrency_exhausted`, `queue_full` |
 | 431 | `asmflow_request_error` | `headers_too_large` |
 | 500 | `asmflow_state_error` | `internal_error` |
-| 502 | `asmflow_upstream_error` | `invalid_upstream_response`, `upstream_connect_failed` |
+| 502 | `asmflow_upstream_error` | `invalid_upstream_response`, `upstream_connect_failed`, `upstream_tls_failed` |
 | 503 | `asmflow_routing_error` | `no_eligible_target`, `not_ready`, `route_disabled` |
 | 503 | `asmflow_state_error` | `unsupported_in_this_build` |
 | 504 | `asmflow_upstream_error` | `upstream_timeout` |
@@ -215,6 +229,23 @@ Notes on the framing and state codes:
   present in the running binary. It is deliberately distinct from `not_ready`,
   which says a present subsystem is not yet usable, and from an empty success,
   which would be indistinguishable from a real answer.
+- `upstream_connect_failed` covers both a refused connection and a name that
+  does not resolve; `upstream_tls_failed` is separate because it is never
+  retryable. A certificate that does not verify is an answer rather than a
+  hiccup, and a fallback on it would silently prefer whichever target has the
+  weakest TLS posture.
+- `upstream_timeout` covers both `timeouts.request_ms` and
+  `timeouts.idle_stream_ms`. The second is what a stream that stays open and
+  stops producing runs into; a total timeout cannot express it.
+- `route_concurrency_exhausted` is what a request receives once
+  `limits.max_active_requests` transfers are already in flight. AsmFlow refuses
+  rather than queueing, so a caller finds out immediately instead of waiting an
+  unbounded time for a slot.
+- An upstream response body is relayed to the client when it is valid JSON
+  within the configured limits, whatever its status. A body that is not — HTML
+  from a proxy, a truncated document, an array where the shape is an object —
+  becomes `invalid_upstream_response`, because relaying it under a JSON content
+  type would be AsmFlow vouching for something it could not read.
 
 Upstream API error bodies may be passed through when they are valid JSON and below the configured
 limit. AsmFlow still adds its request ID header and records a normalized error class internally.
@@ -230,6 +261,12 @@ Allowed only when:
 - the request has not exceeded route attempt limits;
 - the next target is eligible;
 - cancellation has not been requested.
+
+A streamed response commits when its head is written, which is before the
+first event: from that moment the status is decided and the only honest ending
+is a correctly terminated stream. A non-streamed response commits at the end,
+when the status and the length are both known, which is what keeps its fallback
+window open for the whole transfer.
 
 Never allowed when:
 

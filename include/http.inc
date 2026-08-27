@@ -36,6 +36,13 @@
 ; it expires, not exactly at the millisecond.
 %define AF_HTTP_IDLE_TICK_MS 250
 
+; How many written bytes may sit at the front of the outbox before it is
+; compacted. The outbox is a buffer with a write cursor, so bytes already on
+; the wire stay in it until the whole thing drains — fine for one response,
+; and wrong for a stream, where "the whole thing" is not reached until the
+; stream ends and the buffer would have to hold every byte of it.
+%define AF_HTTP_OUTBOX_COMPACT 65536
+
 ; --- llhttp enumerators ----------------------------------------------------
 ; Mirrored here so the assembly can compare against a constant, and asserted in
 ; tests/asm/test_http.asm against the values the linked library actually
@@ -132,13 +139,24 @@
 %define AF_HERR_UNSUPPORTED_BUILD 18
 %define AF_HERR_VERSION           19
 %define AF_HERR_INTERNAL          20
-%define AF_HERR_COUNT             21
+; --- upstream and routing, added with the provider engine in M6 ------------
+%define AF_HERR_UPSTREAM_CONNECT  21
+%define AF_HERR_UPSTREAM_TLS      22
+%define AF_HERR_UPSTREAM_TIMEOUT  23
+%define AF_HERR_UPSTREAM_INVALID  24
+%define AF_HERR_NO_TARGET         25
+%define AF_HERR_CAPACITY          26
+%define AF_HERR_COUNT             27
 
 ; Optional response headers, chosen per response rather than always emitted.
 %define AF_HEAD_NO_STORE   1
 %define AF_HEAD_ALLOW_GET  2
 %define AF_HEAD_ALLOW_POST 4
 %define AF_HEAD_SSE        8
+; A streamed response has no length to state when its head is written, so it
+; is framed with chunked transfer coding. That keeps the connection reusable,
+; which `Connection: close` plus a raw stream would not.
+%define AF_HEAD_CHUNKED    16
 
 ; --- af_http_conn ----------------------------------------------------------
 ; One accepted client. Everything a request needs is inside the slot: a
@@ -191,7 +209,8 @@
 %define HC_CTYPE          320
 %define HC_RESPONSE       352
 %define HC_REQUEST_ID     384
-%define HC_PARSER         416
+%define HC_EXCHANGE       416   ; af_prov_exchange * while HC_F_UPSTREAM is set
+%define HC_PARSER         424
 
 ; ULID text is 26 bytes; the field carries the NUL as well, because the value is
 ; appended to a header with the C-string helpers.
@@ -211,6 +230,11 @@
 %define HC_F_FAULT          1024  ; HC_FAULT holds the AF_HERR_* to answer with
 %define HC_F_UPGRADE        2048
 %define HC_F_DRAINING       4096  ; response sent, reading the rest away
+; A request handed to the provider engine. The response will be written from
+; libcurl's callbacks rather than from the dispatcher, so the connection is
+; neither idle nor answered: the idle sweep leaves it alone, and the parser is
+; not fed again until the exchange finishes.
+%define HC_F_UPSTREAM       8192
 
 ; --- af_http_server --------------------------------------------------------
 ;   +0   listen_fd

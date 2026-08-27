@@ -29,6 +29,7 @@
 %include "json.inc"
 %include "jsonw.inc"
 %include "runtime.inc"
+%include "errors.inc"
 
         extern af_buf_append
         extern af_buf_clear
@@ -53,6 +54,12 @@
         extern af_http_error_def
         extern af_http_fault
         extern af_http_check_auth
+
+        ; The upstream engine. A generation request is handed over and the
+        ; connection suspends; everything else about it happens in
+        ; src/providers/.
+        extern af_prov_exchange_start
+        extern af_prov_family_for_endpoint
         extern af_http_ctype_is
 
         extern af_id_generate
@@ -843,10 +850,78 @@ af_http_ep_generation:
         cmp     qword [r15 + RTE_ENABLED], 0
         je      .free_and_route_disabled
 
+        ; Everything the gateway can decide on its own has been decided. The
+        ; request now goes upstream, and this connection stops being answerable
+        ; until it comes back: af_prov_exchange_start returns AF_OK having
+        ; written nothing, and the response is produced from libcurl's
+        ; callbacks (ADR 0011).
+        mov     r12, [rbx + HC_SERVER]
+        test    r12, r12
+        jz      .free_and_unavailable
+        mov     r12, [r12 + HS_RT]
+        test    r12, r12
+        jz      .free_and_unavailable
+        mov     r12, [r12 + RT_PROV]
+        test    r12, r12
+        jz      .free_and_unsupported
+
+        mov     rdi, [rbx + HC_ENDPOINT]
+        call    af_prov_family_for_endpoint
+        cmp     rax, 0
+        jl      .free_and_unsupported
+        mov     r14, rax
+
+        lea     rdi, [rsp + GEN_DOC]
+        call    af_json_doc_root
+        mov     r13, rax
+
+        mov     rdi, r12
+        mov     rsi, rbx
+        mov     rdx, r15
+        mov     rcx, r14
+        mov     r8, r13
+        call    af_prov_exchange_start
+        mov     r14, rax
+
+        ; The document is released either way. On the success path the request
+        ; body was already re-emitted into the exchange's own buffer, so
+        ; nothing downstream reads it again.
+        lea     rdi, [rsp + GEN_DOC]
+        call    af_json_doc_free
+
+        test    r14, r14
+        jns     .suspended
+        mov     rdi, rbx
+        cmp     r14, AF_E_ROUTE_NO_TARGET
+        je      .no_target
+        cmp     r14, AF_E_ROUTE_CAPACITY
+        je      .capacity
+        mov     rsi, AF_HERR_INTERNAL
+        call    af_http_send_error
+        AF_LEAVE
+.no_target:
+        mov     rsi, AF_HERR_NO_TARGET
+        call    af_http_send_error
+        AF_LEAVE
+.capacity:
+        mov     rsi, AF_HERR_CAPACITY
+        call    af_http_send_error
+        AF_LEAVE
+.suspended:
+        AF_LEAVE_OK
+
+.free_and_unsupported:
         lea     rdi, [rsp + GEN_DOC]
         call    af_json_doc_free
         mov     rdi, rbx
         mov     rsi, AF_HERR_UNSUPPORTED_BUILD
+        call    af_http_send_error
+        AF_LEAVE
+.free_and_unavailable:
+        lea     rdi, [rsp + GEN_DOC]
+        call    af_json_doc_free
+        mov     rdi, rbx
+        mov     rsi, AF_HERR_NOT_READY
         call    af_http_send_error
         AF_LEAVE
 

@@ -14,6 +14,54 @@ once executable releases begin.
 - MCP stdio and Streamable HTTP supervision.
 - ncursesw TUI.
 
+## [0.5.0] - 2026-08-27
+
+### Added
+
+- The upstream client. `asmflowd` forwards `/v1/responses` and
+  `/v1/chat/completions` to a configured provider and returns the answer, both
+  buffered and streamed.
+- `src/ffi/curl_shim.c`: the whole libcurl boundary, driven by AsmFlow's own
+  epoll loop through `curl_multi_socket_action` (ADR 0011). An upstream socket
+  is a loop source like the listener and the control socket; there is no second
+  reactor and no thread.
+- `src/providers/`: the provider adapter, the SSE framer, the exchange state
+  machine, and the normalisation of every libcurl failure into one of the
+  `AF_E_UP_*` classes the configuration can name.
+- Streaming with `Transfer-Encoding: chunked`. Events are forwarded byte for
+  byte in order, and `limits.sse_event_max_bytes` applies to each event as a
+  unit.
+- Backpressure: a client that reads slower than its provider writes pauses the
+  upstream transfer instead of growing a buffer.
+- Cancellation: a client that disconnects cancels its upstream transfer
+  immediately, rather than leaving a provider generating output nobody will
+  read.
+- `limits.max_active_requests` bounds concurrent upstream transfers, and a
+  request beyond it is refused with `route_concurrency_exhausted` rather than
+  queued for an unbounded time.
+- `tests/mock_provider.py`: a provider whose wire bytes a test writes directly,
+  and the four suites built on it.
+- `scripts/gate_m6.py` and `make gate-m6`.
+
+### Changed
+
+- `/v1/responses` and `/v1/chat/completions` no longer answer
+  `unsupported_in_this_build`. Every request-side refusal M5 made is unchanged.
+- The response catalogue gained `upstream_connect_failed`, `upstream_tls_failed`,
+  `upstream_timeout`, `invalid_upstream_response`, `no_eligible_target`, and
+  `route_concurrency_exhausted`; `docs/API_CONTRACT.md` documents each.
+- The connection outbox is compacted as it drains, so a stream bounds it by
+  what is pending rather than by its own total length.
+
+### Fixed
+
+- `make check` errored instead of skipping on a machine with nothing built.
+  The rule now lives on the one path that starts a daemon, and
+  `make check-buildless` reproduces the condition locally.
+- Both milestone gate scripts now fail when a suite they run skips anything;
+  unittest exits 0 on a run that skipped everything, so a mis-set `BUILD_DIR`
+  could have made a gate pass without testing.
+
 ## [0.4.0] - 2026-08-27
 
 `asmflowd` serves HTTP. It binds a TCP listener, parses HTTP/1.1 with every

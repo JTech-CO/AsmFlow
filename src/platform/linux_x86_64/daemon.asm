@@ -31,6 +31,7 @@
 %include "db.inc"
 %include "loop.inc"
 %include "runtime.inc"
+%include "provider.inc"
 
         extern af_out_bytes
         extern af_out_cstr
@@ -78,6 +79,9 @@
 
         extern af_http_server_init
         extern af_http_server_shutdown
+
+        extern af_prov_engine_init
+        extern af_prov_engine_shutdown
 
         extern af_signal_mask_build
         extern af_signals_block
@@ -139,6 +143,8 @@ msg_no_upstream:
 msg_no_upstream_len equ $ - msg_no_upstream
 msg_listener_failed: db "asmflowd: the gateway listener could not be bound", 10
 msg_listener_failed_len equ $ - msg_listener_failed
+msg_upstream_failed: db "asmflowd: the upstream client could not be started", 10
+msg_upstream_failed_len equ $ - msg_upstream_failed
 msg_shutdown: db "asmflowd: shutting down", 10
 msg_shutdown_len equ $ - msg_shutdown
 
@@ -498,7 +504,8 @@ af_daemon_on_signal:
 %define CTX_LOOP   (((CTX_EXIT + 8) + 15) & ~15)
 %define CTX_CTL    (CTX_LOOP + LOOP_SIZE)
 %define CTX_HTTP   (CTX_CTL + CTLS_SIZE)
-%define CTX_SIZE   (CTX_HTTP + HS_SIZE)
+%define CTX_PROV   (CTX_HTTP + HS_SIZE)
+%define CTX_SIZE   (CTX_PROV + PE_SIZE)
 
 ; Bits in CTX_FLAGS, so teardown knows what was actually acquired.
 %define CTX_F_ARENA   1
@@ -507,6 +514,7 @@ af_daemon_on_signal:
 %define CTX_F_LOOP    8
 %define CTX_F_CTL     16
 %define CTX_F_HTTP    32
+%define CTX_F_PROV    64
 
 ; ---------------------------------------------------------------------------
 ; af_daemon_run(const char *config_path_or_null) -> int exit code
@@ -636,7 +644,24 @@ af_daemon_run:
         test    rax, rax
         js      .control_failed
 
-        ; --- 8. the data-plane listener ---
+        ; --- 8. the upstream client ---
+        ;
+        ; Before the listener, deliberately. Everything that can fail about
+        ; libcurl — a version whose enumerators do not match ours, a timer
+        ; descriptor the kernel will not give — fails here, where the daemon can
+        ; still decline to start, rather than on the first request that arrives
+        ; at a listener already accepting traffic.
+        lea     rdi, [rbx + CTX_PROV]
+        lea     rsi, [rbx + CTX_LOOP]
+        lea     rdx, [rbx + CTX_RT]
+        call    af_prov_engine_init
+        test    rax, rax
+        js      .upstream_failed
+        or      qword [rbx + CTX_FLAGS], CTX_F_PROV
+        lea     rax, [rbx + CTX_PROV]
+        mov     [rbx + CTX_RT + RT_PROV], rax
+
+        ; --- 9. the data-plane listener ---
         lea     rdi, [rbx + CTX_HTTP]
         mov     rsi, r13
         lea     rdx, [rbx + CTX_LOOP]
@@ -715,6 +740,15 @@ af_daemon_run:
         mov     qword [rbx + CTX_EXIT], AF_EXIT_STORAGE
         jmp     .shutdown
 
+.upstream_failed:
+        mov     [rbx + CTX_EXIT], rax
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_upstream_failed]
+        mov     rdx, msg_upstream_failed_len
+        call    af_out_bytes
+        mov     qword [rbx + CTX_EXIT], AF_EXIT_CONFIG
+        jmp     .shutdown
+
 .listener_failed:
         mov     edi, AF_FD_STDERR
         lea     rsi, [msg_listener_failed]
@@ -755,6 +789,15 @@ af_daemon_run:
         lea     rdi, [rbx + CTX_HTTP]
         call    af_http_server_shutdown
 .no_http:
+        ; The engine goes after the listener, not before: releasing a
+        ; connection detaches its exchange, and an engine already torn down
+        ; would be one those connections reach into.
+        test    qword [rbx + CTX_FLAGS], CTX_F_PROV
+        jz      .no_upstream
+        mov     qword [rbx + CTX_RT + RT_PROV], 0
+        lea     rdi, [rbx + CTX_PROV]
+        call    af_prov_engine_shutdown
+.no_upstream:
         test    qword [rbx + CTX_FLAGS], CTX_F_CTL
         jz      .no_control
         lea     rdi, [rbx + CTX_CTL]

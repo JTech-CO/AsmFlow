@@ -139,10 +139,11 @@ class FragmentationTests(unittest.TestCase):
         ]
         raw = self._send_in_pieces(b"", pieces)
         response = parse_responses(raw)[0]
+        # The base fixture's route serves chat completions only, so this is a
+        # routing answer. What matters here is that it is the SAME routing
+        # answer a whole request gets: the split changed nothing.
         self.assertEqual(503, response.status)
-        self.assertEqual(
-            "unsupported_in_this_build", response.json()["error"]["code"]
-        )
+        self.assertEqual("no_eligible_target", response.json()["error"]["code"])
 
     def test_a_split_inside_a_chunk_size_is_still_that_size(self) -> None:
         body = json.dumps({"model": "general"}).encode()

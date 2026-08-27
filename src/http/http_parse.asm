@@ -771,6 +771,15 @@ af_http_cb_message_complete:
         inc     qword [rax + HS_REQUESTS]
 .no_server:
 
+        ; A request the dispatcher handed to a provider has NOT been answered.
+        ; Resetting here would clear the flags its answer still depends on —
+        ; keep-alive among them — and would unmark the suspension, so the next
+        ; pipelined request would be parsed and dispatched before the first one
+        ; had produced a byte. Pausing stops the parse with the state intact;
+        ; af_http_conn_resume lifts it once the exchange has answered.
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .suspended
+
         ; A client that asked to close, or a request that was refused, gets the
         ; response it is owed and then the connection ends. Continuing to parse
         ; after that would mean reading a request nobody will answer.
@@ -784,6 +793,9 @@ af_http_cb_message_complete:
         xor     eax, eax
         AF_LEAVE
 
+.suspended:
+        mov     eax, AF_HPE_PAUSED
+        AF_LEAVE
 .close_after:
         or      qword [rbx + HC_FLAGS], HC_F_CLOSING
         mov     eax, -1

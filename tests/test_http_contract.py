@@ -194,15 +194,21 @@ class StatusCodeTests(unittest.TestCase):
             self.assertEqual(415, response.status)
 
     def test_a_content_type_parameter_is_accepted(self) -> None:
+        """`application/json; charset=utf-8` is application/json.
+
+        What this asserts is the absence of a 415. Where the request goes after
+        that is the router's business and changes between milestones; that it
+        was not refused for its media type does not.
+        """
         with Gateway() as gateway:
             response = gateway.post_json(
                 "/v1/responses",
                 json.dumps({"model": "general"}),
                 headers=[("Content-Type", "application/json; charset=utf-8")],
             )
-            self.assertEqual(503, response.status)
-            self.assertEqual(
-                "unsupported_in_this_build", response.json()["error"]["code"]
+            self.assertNotEqual(415, response.status)
+            self.assertNotEqual(
+                "unsupported_content_type", response.json()["error"]["code"]
             )
 
     def test_a_body_that_is_not_json_is_400(self) -> None:
@@ -237,17 +243,31 @@ class StatusCodeTests(unittest.TestCase):
             self.assertEqual("unknown_model_alias", error["code"])
             self.assertEqual("model", error["param"])
 
-    def test_a_known_alias_reaches_the_unbuilt_upstream(self) -> None:
+    def test_a_known_alias_is_routed_rather_than_refused(self) -> None:
+        """The base fixture's only route serves chat completions.
+
+        So the two endpoints answer differently, and the difference is the
+        point: `/v1/responses` has no eligible target and says so, while
+        `/v1/chat/completions` does have one and fails at the provider — which
+        is not listening, because this suite has no provider. Both are routing
+        answers rather than request refusals.
+        """
         with Gateway() as gateway:
-            for target in ("/v1/responses", "/v1/chat/completions"):
-                with self.subTest(target=target):
-                    response = gateway.post_json(
-                        target, json.dumps({"model": "general"})
-                    )
-                    self.assertEqual(503, response.status)
-                    error = response.json()["error"]
-                    self.assertEqual("unsupported_in_this_build", error["code"])
-                    self.assertEqual("asmflow_state_error", error["type"])
+            responses = gateway.post_json(
+                "/v1/responses", json.dumps({"model": "general"})
+            )
+            self.assertEqual(503, responses.status)
+            error = responses.json()["error"]
+            self.assertEqual("no_eligible_target", error["code"])
+            self.assertEqual("asmflow_routing_error", error["type"])
+
+            chat = gateway.post_json(
+                "/v1/chat/completions", json.dumps({"model": "general"})
+            )
+            self.assertEqual(502, chat.status)
+            error = chat.json()["error"]
+            self.assertEqual("upstream_connect_failed", error["code"])
+            self.assertEqual("asmflow_upstream_error", error["type"])
 
     def test_a_disabled_route_is_503_not_404(self) -> None:
         """The alias exists; it is turned off. Those are different answers."""

@@ -44,7 +44,7 @@ SRC_TUI      := $(filter-out $(TUI_ENTRY),$(wildcard src/tui/*.asm))
 # must not link libsqlite3 at all (AGENTS.md invariant 14). The ABI probe exists
 # only for the test harness.
 SRC_FFI_SHARED := src/ffi/json_shim.c
-SRC_FFI_DAEMON := src/ffi/sqlite_shim.c src/ffi/llhttp_shim.c
+SRC_FFI_DAEMON := src/ffi/sqlite_shim.c src/ffi/llhttp_shim.c src/ffi/curl_shim.c
 SRC_FFI_TEST   := src/ffi/abi_probe.c
 SRC_FFI_C      := $(SRC_FFI_SHARED) $(SRC_FFI_DAEMON) $(SRC_FFI_TEST)
 
@@ -134,7 +134,10 @@ TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
         valgrind-storage valgrind-http \
         test-http test-http-contract test-http-limits test-http-smuggling \
         test-http-fragments test-http-faults test-http-soak \
-        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 \
+        test-provider test-provider-contract test-sse-fragments \
+        test-backpressure test-client-cancel test-provider-faults \
+        test-stream-soak valgrind-provider \
+        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 \
         toolchain-versions
 
 help:
@@ -169,6 +172,7 @@ help:
 	  '  make gate-m3        JSON, configuration, and secret references' \
 	  '  make gate-m4        SQLite, migrations, and the control plane' \
 	  '  make gate-m5        Gateway HTTP listener and contract' \
+	  '  make gate-m6        Upstream client, Responses/Chat, streaming' \
 	  '' \
 	  'Packaging:' \
 	  '  make package        Create a source archive under dist/'
@@ -410,6 +414,57 @@ gate-m5: gate-m4 test-http test-http-contract test-http-limits \
          test-http-soak valgrind-http
 	$(PYTHON) scripts/gate_m5.py --build-dir $(BUILD_DIR) --skip-suites
 	@printf 'M5 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M6 targets: the upstream client, Responses/Chat, and streaming.
+#
+# Every suite here runs against `tests/mock_provider.py`, a provider whose wire
+# bytes the test writes directly. A real provider could not be asked to split
+# an event across two packets or to stop talking mid-sentence, and those are
+# the cases M6 exists to get right.
+# ---------------------------------------------------------------------------
+test-provider: build-tests
+	$(DEBUG_DIR)/asmflow-tests --filter prov/ --verbose
+
+test-provider-contract: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_provider_contract
+
+test-sse-fragments: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_provider_streaming
+
+test-backpressure: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_provider_faults.BackpressureTests \
+	  tests.test_provider_faults.CapacityTests
+
+test-client-cancel: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_provider_faults.CancellationTests \
+	  tests.test_provider_faults.DescriptorTests
+
+test-provider-faults: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_provider_faults
+
+# HARNESS.md M6 DoD 8 asks for an hour. An hour is not a CI step, so the volume
+# is a parameter and the assertions are not: set ASMFLOW_SOAK_SECONDS to run
+# the release-verification length.
+test-stream-soak: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_provider_soak
+
+# `still reachable` is non-zero here and is not a defect: linking libcurl pulls
+# in GnuTLS, whose ELF constructors allocate global state before main and never
+# free it. The gate asserts `definitely lost` is zero, which is the part AsmFlow
+# is responsible for.
+valgrind-provider: build-tests
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite \
+	  --errors-for-leak-kinds=definite --track-origins=yes \
+	  --error-exitcode=99 \
+	  $(DEBUG_DIR)/asmflow-tests --filter prov/
+
+gate-m6: gate-m5 test-provider test-provider-contract test-sse-fragments \
+         test-provider-faults test-stream-soak valgrind-provider
+	$(PYTHON) scripts/gate_m6.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M6 gate passed for AsmFlow %s\n' '$(VERSION)'
 
 package: check
 	@mkdir -p dist

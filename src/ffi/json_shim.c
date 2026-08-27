@@ -19,6 +19,7 @@
 #include <jansson.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 /* --- type discrimination -------------------------------------------------
  * The returned values are the JSON_* enumerators. include/json.inc mirrors
@@ -169,4 +170,60 @@ json_t *af_jsonc_loadb(const char *buffer, size_t buflen, size_t flags,
 void af_jsonc_decref(json_t *value)
 {
     json_decref(value);
+}
+
+/* --- serialisation for the upstream request ------------------------------
+ *
+ * The gateway forwards a client's request body to a provider with one field
+ * changed: `model` becomes the target's configured upstream model
+ * (docs/API_CONTRACT.md 5). Everything else, including fields AsmFlow has no
+ * opinion about, has to survive the round trip.
+ *
+ * Doing that with AsmFlow's own writer would mean re-encoding every value,
+ * and a JSON real has no exact decimal text that assembly could recover from
+ * a double. Jansson parsed the document and Jansson is what can re-emit it,
+ * so these two functions exist and the substitution itself — which field,
+ * which value, under what rule — stays in src/providers/provider_body.asm.
+ *
+ * `JSON_PRESERVE_ORDER` is Jansson's default since 2.8 and is passed anyway:
+ * a default is a property of a version, and a fixture that compares bytes
+ * needs member order to be a property of AsmFlow.
+ */
+int af_jsonc_object_set_string(json_t *object, const char *key,
+                               const char *value, size_t length)
+{
+    json_t *replacement = json_stringn(value, length);
+    int result;
+
+    if (replacement == NULL) {
+        return -1;
+    }
+    result = json_object_set_new(object, key, replacement);
+    return result;
+}
+
+/* Compact serialisation of `value`. The returned pointer is Jansson's, and
+ * the caller releases it with af_jsonc_dump_free. NULL on failure. */
+char *af_jsonc_dump(const json_t *value, size_t *out_length)
+{
+    char *text = json_dumps(value, JSON_COMPACT | JSON_PRESERVE_ORDER
+                                   | JSON_ENCODE_ANY);
+
+    if (text == NULL) {
+        return NULL;
+    }
+    if (out_length != NULL) {
+        size_t length = 0;
+
+        while (text[length] != '\0') {
+            length++;
+        }
+        *out_length = length;
+    }
+    return text;
+}
+
+void af_jsonc_dump_free(char *text)
+{
+    free(text);
 }
