@@ -61,6 +61,12 @@ once executable releases begin.
 - Both milestone gate scripts now fail when a suite they run skips anything;
   unittest exits 0 on a run that skipped everything, so a mis-set `BUILD_DIR`
   could have made a gate pass without testing.
+- The test harness treated a connectable control socket as a started daemon.
+  The socket binds several startup steps before the upstream engine and the
+  listener open their descriptors, so a baseline taken then was counting a
+  daemon mid-start; the M4 disconnect test failed on one CI machine and passed
+  on another from the same commit. The harness now waits for the daemon's own
+  `ready`.
 
 ## [0.4.0] - 2026-08-27
 

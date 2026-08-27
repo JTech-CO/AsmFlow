@@ -94,17 +94,30 @@ class DaemonUnderTest:
                     f"the daemon exited during startup with "
                     f"{self.process.returncode}:\n{out.decode()}{err.decode()}"
                 )
-            if Path(self.socket_path).exists():
-                try:
-                    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    probe.settimeout(2.0)
-                    probe.connect(self.socket_path)
-                    probe.close()
-                    return
-                except OSError:
-                    pass
+            if Path(self.socket_path).exists() and self._is_ready():
+                return
             time.sleep(0.02)
-        raise RuntimeError("the control socket never became connectable")
+        raise RuntimeError("the daemon never became ready")
+
+    def _is_ready(self) -> bool:
+        """Connectable is not the same as started.
+
+        The control socket binds partway through startup, several steps before
+        the upstream engine and the data-plane listener open their own
+        descriptors. A test that took a baseline the moment the socket answered
+        was counting a daemon mid-start, and would then see three descriptors
+        appear that it had no reason to expect — which is exactly how
+        `test_abrupt_disconnects_are_reclaimed` failed, intermittently and only
+        on a machine slow enough for the gap to matter.
+
+        `ready` is the daemon's own statement that startup finished, so it is
+        what to wait for.
+        """
+        try:
+            with ControlClient(self.socket_path) as client:
+                return bool(client.call("system.snapshot").get("ready"))
+        except (OSError, ControlError, ValueError):
+            return False
 
     def connect(self) -> ControlClient:
         return ControlClient(self.socket_path)
