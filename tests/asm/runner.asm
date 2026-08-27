@@ -41,6 +41,7 @@
         extern af_clock_set_override_ns
         extern af_test_run_crash
         extern af_test_run_reload_soak
+        extern af_route_corpus_main
         extern af_dec_to_u64
 
 %define AF_FD_STDOUT 1
@@ -87,6 +88,7 @@ opt_filter:  db "--filter", 0
 opt_verbose: db "--verbose", 0
 opt_crash:   db "--crash", 0
 opt_reload_soak: db "--reload-soak", 0
+opt_route_corpus: db "--routing-corpus", 0
 
         section .text
 
@@ -135,8 +137,27 @@ main:
         call    af_cstr_eq
         test    rax, rax
         jnz     .do_reload_soak
+        mov     rdi, [r12 + r13 * 8]
+        lea     rsi, [opt_route_corpus]
+        call    af_cstr_eq
+        test    rax, rax
+        jnz     .do_route_corpus
         inc     r13
         jmp     .args
+
+; --routing-corpus PATH runs the routing scenarios in PATH and prints what the
+; selector decided, for tests/test_routing_parity.py to compare against the
+; Python oracle. Kept out of the registry because it takes an argument and
+; produces data rather than a verdict.
+.do_route_corpus:
+        inc     r13
+        cmp     r13, rbx
+        jae     .args_done
+        mov     rdi, [r12 + r13 * 8]
+        call    af_route_corpus_main
+        movsxd  rdi, eax
+        call    af_sys_exit_group
+        ud2
 
 ; --reload-soak N runs the configuration reload soak and never returns. It is
 ; kept out of the registry because it takes long enough to spoil the ordinary

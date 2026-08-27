@@ -98,5 +98,8 @@ jobs:
       - name: M6 gate - upstream client, Responses/Chat, and streaming
         run: make gate-m6
 
+      - name: M7 gate - routing, health, circuit breaking, and fallback
+        run: make gate-m7
+
       - name: GDB smoke check
         run: make gdb-abi-smoke

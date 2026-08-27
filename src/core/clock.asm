@@ -76,6 +76,37 @@ af_monotonic_ns:
         AF_LEAVE
 
 ; ---------------------------------------------------------------------------
+; af_monotonic_now() -> u64
+;
+; The reading itself, for the callers that want a number rather than a status.
+;
+; This exists because the out-parameter form is a trap in an assembly call
+; site: `call af_monotonic_ns` with a stale rdi writes eight bytes of clock
+; over whatever that register happened to point at, and returns a status of
+; zero that reads exactly like a plausible timestamp. That is not hypothetical
+; — it shipped in M6, where the register still held the configuration snapshot
+; and every generation request wrote a nanosecond count over its reference
+; count. Nothing crashed; the snapshot simply stopped being freed.
+;
+; A clock the kernel refuses to read answers 0. Callers use this for latency
+; and for deadlines, where a failed reading is not something to recover from,
+; and a monotonic clock does not otherwise return 0.
+; ---------------------------------------------------------------------------
+        global af_monotonic_now
+af_monotonic_now:
+        AF_ENTER 16
+        mov     qword [rsp], 0
+        lea     rdi, [rsp]
+        call    af_monotonic_ns
+        test    rax, rax
+        js      .unavailable
+        mov     rax, [rsp]
+        AF_LEAVE
+.unavailable:
+        xor     eax, eax
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
 ; af_monotonic_ms(u64 *out) -> af_status
 ; ---------------------------------------------------------------------------
         global af_monotonic_ms

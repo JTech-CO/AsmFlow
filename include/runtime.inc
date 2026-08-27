@@ -35,6 +35,7 @@
 %define RT_RELOAD_COUNT  80
 %define RT_LAST_ERROR    88
 %define RT_PROV          96
-%define RT_SIZE          104
+%define RT_ROUTING       104   ; af_routing * — health, circuits, cursors
+%define RT_SIZE          112
 
 %endif ; ASMFLOW_RUNTIME_INC

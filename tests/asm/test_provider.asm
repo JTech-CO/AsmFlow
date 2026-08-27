@@ -40,6 +40,7 @@
         extern af_prov_engine_struct_size
         extern af_prov_exchange_struct_size
         extern af_prov_protocols
+        extern af_prov_may_fall_back
 
         extern af_curl_poll_ordinals
         extern af_curl_error_ordinals
@@ -670,4 +671,98 @@ s_http_https: db "http,https", 0
         AF_CHECK_TRUE AF_PROV_PAUSE_LOW < AF_PROV_PAUSE_HIGH, "low mark is under the high mark"
         AF_CHECK_TRUE AF_HTTP_OUTBOX_COMPACT <= AF_PROV_PAUSE_LOW, \
                       "compaction happens no later than the resume point"
+        AF_TEST_END
+
+; ---------------------------------------------------------------------------
+; The commit barrier (HARNESS.md M7 DoD 6).
+;
+; The integration suite asserts the property — no second attempt once bytes
+; have gone out — but it cannot exercise the barrier itself. Every failure
+; class that can occur AFTER a response head is written is a transport failure,
+; and none of those is retryable, so a build with the barrier deleted passes
+; that suite unchanged. Removing it and watching nothing fail is how this test
+; came to exist.
+;
+; So the barrier is asserted here, directly, against an exchange built to be
+; exactly the case the integration suite cannot reach: committed, and failing
+; with a class the route does name as retryable.
+; ---------------------------------------------------------------------------
+
+        AF_TEST "prov/a_committed_exchange_never_falls_back", (PX_SIZE + 64)
+        lea     rdi, [rsp]
+        mov     rsi, PX_SIZE
+        call    af_mem_zero
+        ; A budget with room, a retryable class, and somewhere to answer.
+        mov     qword [rsp + PX_MAX_ATTEMPTS], 4
+        mov     qword [rsp + PX_ATTEMPT], 1
+        mov     qword [rsp + PX_RETRY_MASK], AF_RETRY_HTTP_503
+        mov     qword [rsp + PX_CONN], 1        ; any non-null: a live client
+
+        ; The control. Without this the test would pass against a function that
+        ; always answered no.
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_TRUE rax, "uncommitted and retryable: fallback is allowed"
+
+        or      qword [rsp + PX_FLAGS], AF_PX_F_COMMITTED
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "committed: never, whatever the class"
+
+        and     qword [rsp + PX_FLAGS], ~AF_PX_F_COMMITTED
+        or      qword [rsp + PX_FLAGS], AF_PX_F_HEAD_SENT
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "a head on the wire is a commitment too"
+
+        and     qword [rsp + PX_FLAGS], ~AF_PX_F_HEAD_SENT
+        or      qword [rsp + PX_FLAGS], AF_PX_F_CANCELLED
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "a client that left is not owed another attempt"
+
+        and     qword [rsp + PX_FLAGS], ~AF_PX_F_CANCELLED
+        mov     qword [rsp + PX_CONN], 0
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "and neither is a connection that is gone"
+        AF_TEST_END
+
+        AF_TEST "prov/the_attempt_budget_bounds_the_loop", (PX_SIZE + 64)
+        lea     rdi, [rsp]
+        mov     rsi, PX_SIZE
+        call    af_mem_zero
+        mov     qword [rsp + PX_MAX_ATTEMPTS], 2
+        mov     qword [rsp + PX_RETRY_MASK], AF_RETRY_HTTP_503
+        mov     qword [rsp + PX_CONN], 1
+
+        mov     qword [rsp + PX_ATTEMPT], 1
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_TRUE rax, "one of two attempts used"
+
+        mov     qword [rsp + PX_ATTEMPT], 2
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "the budget is spent"
+
+        mov     qword [rsp + PX_ATTEMPT], 1
+        mov     qword [rsp + PX_RETRY_MASK], 0
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_HTTP_503
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "a class the route does not name"
+
+        mov     qword [rsp + PX_RETRY_MASK], AF_RETRY_HTTP_503
+        lea     rdi, [rsp]
+        mov     rsi, AF_E_UP_TLS
+        call    af_prov_may_fall_back
+        AF_CHECK_FALSE rax, "TLS is never retryable"
         AF_TEST_END

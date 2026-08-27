@@ -151,8 +151,12 @@ def c_defined_symbols() -> set[str]:
     which is not the thing under test, and legitimately differs from AF_ENTER.
     """
     names: set[str] = set()
-    for path in ROOT.glob("src/**/*.c"):
-        names.update(C_FUNC_RE.findall(path.read_text(encoding="utf-8")))
+    # `tests/ffi` is scanned for the same reason `src/ffi` is: the test binary
+    # links a C harness too, and a compiler-emitted prologue there is no more
+    # under test than one here.
+    for pattern in ("src/**/*.c", "tests/ffi/*.c"):
+        for path in ROOT.glob(pattern):
+            names.update(C_FUNC_RE.findall(path.read_text(encoding="utf-8")))
     return names
 
 

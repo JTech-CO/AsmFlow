@@ -8,17 +8,19 @@ The runtime is designed around NASM x86-64 assembly, a small and explicit C ABI
 boundary, a local OpenAI-compatible gateway, and a supervisor for local and
 remote Model Context Protocol (MCP) servers.
 
-> **Project status:** `0.5.0` — current phase
-> `M7 — Routing, health, circuit breaking, and fallback`. `asmflowd` is a
-> working gateway: it validates its configuration, migrates SQLite, binds a
-> mode-0600 control socket and a TCP listener, answers `/healthz`, `/readyz`,
-> and `/v1/models`, and forwards `/v1/responses` and `/v1/chat/completions` to
-> a configured provider — buffered or streamed as Server-Sent Events, with
-> backpressure, cancellation, and normalised upstream errors. Target selection
-> is priority-only for now; round-robin, least-latency, health checks, circuit
-> breaking, and fallback are M7. The MCP supervisor and the console are not
-> wired yet. See [PROGRESS.md](PROGRESS.md) for the authoritative per-milestone
-> state and [HARNESS.md](HARNESS.md) for the gate each milestone must pass.
+> **Project status:** `0.6.0` — current phase
+> `M8 — MCP stdio supervisor`. `asmflowd` is a working gateway: it validates
+> its configuration, migrates SQLite, binds a mode-0600 control socket and a
+> TCP listener, answers `/healthz`, `/readyz`, and `/v1/models`, and forwards
+> `/v1/responses` and `/v1/chat/completions` to a routed provider — buffered or
+> streamed as Server-Sent Events, with backpressure, cancellation, and
+> normalised upstream errors. Routing chooses among a route's targets by
+> priority, round-robin, or observed latency, opens a circuit against a
+> provider that keeps failing, and falls back to another target on a retryable
+> failure — never once a byte has reached the client. The MCP supervisor and
+> the console are not wired yet. See [PROGRESS.md](PROGRESS.md) for the
+> authoritative per-milestone state and [HARNESS.md](HARNESS.md) for the gate
+> each milestone must pass.
 
 ## 한국어 요약
 
@@ -133,7 +135,7 @@ Each milestone has a gate target that asserts its Definition of Done from
 `HARNESS.md`. Running the latest one runs every earlier one:
 
 ```bash
-make gate-m6
+make gate-m7
 ```
 
 - `gate-m0` — repository structure, JSON contracts, examples, secret policy,
@@ -165,6 +167,14 @@ make gate-m6
   listener without an authentication policy refuses to start, ten thousand
   requests leave the resident set flat, and every error code the daemon can
   emit is documented in the API contract.
+- `gate-m7` — routing: a fourteen-hundred-scenario corpus agrees with the
+  Python routing oracle on every candidate set and every selection, the same
+  scenario decides identically a hundred times running, the circuit breaker
+  follows a golden timeline against a real provider, a fallback happens only
+  on a pre-commit retryable failure and never after a byte has reached the
+  client, no target is attempted twice for one request, the concurrency
+  counter returns on every path an attempt can end, and a fault-injection soak
+  produces no duplicate response and no stream carrying two providers' events.
 - `gate-m6` — the upstream client: a request round-trips to a provider with
   only `model` rewritten, unknown fields and Unicode survive unchanged, the
   same SSE stream delivered at eleven packet sizes produces identical bytes, a

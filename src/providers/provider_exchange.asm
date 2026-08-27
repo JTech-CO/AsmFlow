@@ -41,8 +41,10 @@
 %include "json.inc"
 %include "http.inc"
 %include "provider.inc"
+%include "routing.inc"
 
         extern af_mem_zero
+        extern af_mem_copy
         extern af_mem_eq_ci
         extern af_cstr_len
 
@@ -55,7 +57,7 @@
         extern af_buf_append_byte
         extern af_buf_append_cstr
 
-        extern af_monotonic_ns
+        extern af_monotonic_now
 
         extern af_config_retain
         extern af_config_release
@@ -93,6 +95,16 @@
 
         extern af_prov_slot_alloc
         extern af_prov_slot_release
+
+        extern af_route_candidates
+        extern af_route_select
+        extern af_routing_now_ns
+        extern af_routing_route
+        extern af_health_begin
+        extern af_health_end
+        extern af_health_success
+        extern af_health_failure
+        extern af_prov_is_retryable
         extern af_prov_build_url
         extern af_prov_build_headers
         extern af_prov_rewrite_body
@@ -121,110 +133,32 @@ hex_digits:     db "0123456789abcdef"
         section .text
 
 ; ---------------------------------------------------------------------------
-; af_prov_pick_target(af_config *cfg, af_cfg_route *route, i64 family,
-;                     i64 wants_stream, af_cfg_provider **out_provider)
-;   -> af_cfg_route_target * (NULL when nothing is eligible)
-;
-; M6 picks the eligible target with the lowest `priority`, which is what
-; `policy: priority` means. Round-robin and least-latency are M7's; putting
-; them here now would mean writing a scheduler with no health signal to
-; schedule against.
-; ---------------------------------------------------------------------------
-        global af_prov_pick_target
-af_prov_pick_target:
-        AF_ENTER 64
-;   [rsp +  0]  family        [rsp + 16]  out_provider
-;   [rsp +  8]  wants_stream  [rsp + 24]  best target      [rsp + 32] best provider
-        test    rdi, rdi
-        jz      .none
-        test    rsi, rsi
-        jz      .none
-        mov     rbx, rdi                        ; config
-        mov     r12, rsi                        ; route
-        mov     [rsp], rdx
-        mov     [rsp + 8], rcx
-        mov     [rsp + 16], r8
-        mov     qword [rsp + 24], 0
-        mov     qword [rsp + 32], 0
-
-        ; The route has to serve this endpoint family at all.
-        mov     rdi, [rsp]
-        call    af_prov_family_bit
-        test    [r12 + RTE_ENDPOINT_FAMILIES], rax
-        jz      .none
-
-        xor     r13, r13                        ; target index
-.scan:
-        cmp     r13, [r12 + RTE_TARGET_COUNT]
-        jae     .chosen
-        mov     r14, r13
-        imul    r14, r14, RTG_SIZE
-        add     r14, [r12 + RTE_TARGETS]
-
-        mov     rax, [r14 + RTG_PROVIDER_INDEX]
-        cmp     rax, 0
-        jl      .next
-        cmp     rax, [rbx + CFG_PROVIDER_COUNT]
-        jae     .next
-        imul    rax, rax, PRV_SIZE
-        add     rax, [rbx + CFG_PROVIDERS]
-        mov     r15, rax
-
-        mov     rdi, r15
-        mov     rsi, [rsp]
-        mov     rdx, [rsp + 8]
-        call    af_prov_provider_supports
-        test    rax, rax
-        jz      .next
-
-        cmp     qword [rsp + 24], 0
-        je      .take
-        mov     rax, [rsp + 24]
-        mov     rax, [rax + RTG_PRIORITY]
-        cmp     [r14 + RTG_PRIORITY], rax
-        jge     .next                           ; signed: lower priority wins
-.take:
-        mov     [rsp + 24], r14
-        mov     [rsp + 32], r15
-.next:
-        inc     r13
-        jmp     .scan
-
-.chosen:
-        mov     rax, [rsp + 24]
-        test    rax, rax
-        jz      .none
-        mov     rcx, [rsp + 16]
-        test    rcx, rcx
-        jz      .done
-        mov     rdx, [rsp + 32]
-        mov     [rcx], rdx
-.done:
-        AF_LEAVE
-.none:
-        xor     eax, eax
-        AF_LEAVE
-
-; ---------------------------------------------------------------------------
 ; af_prov_exchange_start(af_prov_engine *e, af_http_conn *c, af_cfg_route *route,
-;                        i64 family, json_t *root) -> af_status
+;                        i64 family, af_json_doc *doc) -> af_status
 ;
-; AF_OK means the request is in flight and the connection is suspended. A
-; negative status means nothing was started and the caller still owes the
-; client a response; the AF_HERR_* to use is written through `out_error`.
+; AF_OK means the request is in flight and the connection is suspended, and the
+; parsed document now belongs to the exchange — the caller must not free it. A
+; negative status means nothing was started, the document is still the
+; caller's, and the client is still owed a response.
+;
+; The document changes hands because a fallback attempt has to re-emit the body
+; against a different upstream model. Freeing it after the first attempt would
+; leave the second with nothing to send.
 ; ---------------------------------------------------------------------------
         global af_prov_exchange_start
 af_prov_exchange_start:
         AF_ENTER 128
-;   [rsp +  0]  engine     [rsp + 32]  root        [rsp + 64]  provider
-;   [rsp +  8]  conn       [rsp + 40]  exchange    [rsp + 72]  target
-;   [rsp + 16]  route      [rsp + 48]  config      [rsp + 80]  wants_stream
-;   [rsp + 24]  family     [rsp + 56]  easy handle
+;   [rsp +  0]  engine     [rsp + 32]  doc         [rsp + 64]  config
+;   [rsp +  8]  conn       [rsp + 40]  exchange    [rsp + 72]  routing
+;   [rsp + 16]  route      [rsp + 48]  status      [rsp + 80]  wants_stream
+;   [rsp + 24]  family     [rsp + 56]  runtime
         test    rdi, rdi
         jz      .invalid
         test    rsi, rsi
         jz      .invalid
         test    rdx, rdx
+        jz      .invalid
+        test    r8, r8
         jz      .invalid
         mov     [rsp], rdi
         mov     [rsp + 8], rsi
@@ -232,7 +166,6 @@ af_prov_exchange_start:
         mov     [rsp + 24], rcx
         mov     [rsp + 32], r8
         mov     qword [rsp + 40], 0
-        mov     qword [rsp + 56], 0
 
         mov     rbx, rsi                        ; conn
         mov     r12, [rbx + HC_SERVER]
@@ -241,24 +174,15 @@ af_prov_exchange_start:
         mov     rax, [r12 + HS_RT]
         test    rax, rax
         jz      .invalid
-        mov     rax, [rax + RT_CONFIG]
-        test    rax, rax
+        mov     [rsp + 56], rax
+        mov     rcx, [rax + RT_CONFIG]
+        test    rcx, rcx
         jz      .invalid
-        mov     [rsp + 48], rax
-
-        mov     rdi, [rsp + 32]
-        call    af_prov_wants_stream
-        mov     [rsp + 80], rax
-
-        mov     rdi, [rsp + 48]
-        mov     rsi, [rsp + 16]
-        mov     rdx, [rsp + 24]
-        mov     rcx, [rsp + 80]
-        lea     r8, [rsp + 64]
-        call    af_prov_pick_target
-        test    rax, rax
-        jz      .no_target
-        mov     [rsp + 72], rax
+        mov     [rsp + 64], rcx
+        mov     rcx, [rax + RT_ROUTING]
+        test    rcx, rcx
+        jz      .invalid
+        mov     [rsp + 72], rcx
 
         mov     rdi, [rsp]
         call    af_prov_slot_alloc
@@ -271,29 +195,83 @@ af_prov_exchange_start:
         mov     [r13 + PX_CONN], rax
         mov     rax, [rsp + 16]
         mov     [r13 + PX_ROUTE], rax
-        mov     rax, [rsp + 72]
-        mov     [r13 + PX_TARGET], rax
-        mov     rax, [rsp + 64]
-        mov     [r13 + PX_PROVIDER], rax
         mov     rax, [rsp + 24]
         mov     [r13 + PX_FAMILY], rax
-        cmp     qword [rsp + 80], 0
-        je      .no_stream_flag
+        mov     rax, [rsp + 72]
+        mov     [r13 + PX_ROUTING], rax
+
+        ; The endpoint family as a route bit, and what the body implies about
+        ; the provider it needs. Both are request properties, so they are
+        ; resolved once and reused by every attempt.
+        mov     rdi, [rsp + 24]
+        call    af_prov_family_bit
+        mov     [r13 + PX_FAMILY_BIT], rax
+
+        ; The route has to advertise this family at all. It is a property of
+        ; the route rather than of any candidate, so it is asked once per
+        ; request instead of once per target — and it is asked, because
+        ; without it a route configured for chat completions would happily
+        ; serve a Responses request and the only symptom would be a provider
+        ; receiving traffic its operator never routed to it.
+        mov     rcx, [rsp + 16]
+        test    [rcx + RTE_ENDPOINT_FAMILIES], rax
+        jz      .wrong_family
+
+        ; Take the document. From here a failure disposes of the exchange,
+        ; which frees it, so the caller must not.
+        mov     rdi, r13
+        add     rdi, PX_DOC
+        mov     rsi, [rsp + 32]
+        mov     rdx, AF_JSONDOC_SIZE
+        call    af_mem_copy
+        mov     rdi, [rsp + 32]
+        mov     rsi, AF_JSONDOC_SIZE
+        call    af_mem_zero
+        or      qword [r13 + PX_FLAGS], AF_PX_F_HAS_DOC
+
+        lea     rdi, [r13 + PX_DOC]
+        call    af_json_doc_root
+        mov     r14, rax
+        mov     rdi, r14
+        call    af_prov_wants_stream
+        mov     [rsp + 80], rax
+        test    rax, rax
+        jz      .no_stream_flag
         or      qword [r13 + PX_FLAGS], AF_PX_F_STREAM
+        or      qword [r13 + PX_REQ_CAPS], AF_CAP_STREAMING
 .no_stream_flag:
 
         ; The snapshot is retained for the exchange's whole life. A reload that
         ; lands mid-transfer must not free the provider record this handle's
         ; URL and credential came from.
-        mov     rdi, [rsp + 48]
+        mov     rdi, [rsp + 64]
         call    af_config_retain
         mov     [r13 + PX_CONFIG], rax
 
-        mov     rax, [rsp + 48]
+        mov     rax, [rsp + 64]
         mov     rax, [rax + CFG_LIM_SSE_EVENT_MAX]
         mov     [r13 + PX_SSE_LIMIT], rax
 
-        call    af_monotonic_ns
+        ; The fallback budget, read once. A reload mid-request must not change
+        ; how many attempts this request is allowed.
+        mov     rax, [rsp + 16]
+        mov     rcx, 1
+        cmp     qword [rax + RTE_FB_ENABLED], 0
+        je      .budget_ready
+        mov     rcx, [rax + RTE_FB_MAX_ATTEMPTS]
+        test    rcx, rcx
+        jnz     .budget_ready
+        mov     rcx, 1
+.budget_ready:
+        mov     [r13 + PX_MAX_ATTEMPTS], rcx
+        mov     rcx, [rax + RTE_FB_RETRYABLE]
+        cmp     qword [rax + RTE_FB_ENABLED], 0
+        jne     .mask_ready
+        xor     ecx, ecx
+.mask_ready:
+        mov     [r13 + PX_RETRY_MASK], rcx
+
+        call    af_monotonic_now
         mov     [r13 + PX_STARTED_NS], rax
 
         lea     rdi, [r13 + PX_URL]
@@ -322,46 +300,10 @@ af_prov_exchange_start:
         test    rax, rax
         js      .fail
 
-        lea     rdi, [r13 + PX_URL]
-        mov     rsi, [rsp + 64]
-        mov     rdx, [rsp + 24]
-        call    af_prov_build_url
-        test    rax, rax
-        js      .fail
-
-        mov     rax, [rsp + 72]
-        lea     rdi, [r13 + PX_BODY]
-        mov     rsi, [rsp + 32]
-        mov     rdx, [rax + RTG_UPSTREAM_MODEL]
-        call    af_prov_rewrite_body
-        test    rax, rax
-        js      .fail
-
         mov     rdi, r13
-        call    af_prov_build_headers
+        call    af_prov_attempt_start
         test    rax, rax
         js      .fail
-
-        mov     rdi, r13
-        call    af_curl_easy_new
-        test    rax, rax
-        jz      .nomem
-        mov     [r13 + PX_EASY], rax
-        mov     [rsp + 56], rax
-
-        mov     rdi, r13
-        call    af_prov_configure_easy
-        test    rax, rax
-        js      .fail
-
-        mov     rax, [rsp]
-        mov     rdi, [rax + PE_MULTI]
-        mov     rsi, [r13 + PX_EASY]
-        call    af_curl_multi_add
-        test    eax, eax
-        jnz     .curl_failed
-        or      qword [r13 + PX_FLAGS], AF_PX_F_ADDED
-        mov     qword [r13 + PX_STATE], AF_PX_ACTIVE
 
         ; The connection is suspended only once the transfer is genuinely in
         ; flight, so a failure above leaves it exactly as the dispatcher found
@@ -370,27 +312,364 @@ af_prov_exchange_start:
         or      qword [rbx + HC_FLAGS], HC_F_UPSTREAM
         AF_LEAVE_OK
 
-.curl_failed:
-        mov     rax, AF_E_UP_CONNECT_FAILED
-        jmp     .fail
-.nomem:
-        mov     rax, AF_E_NOMEM
 .fail:
-        mov     [rsp + 88], rax
+        mov     [rsp + 48], rax
         mov     rdi, [rsp + 40]
         test    rdi, rdi
         jz      .fail_done
+        ; The document came with the exchange, so a failure here has to hand it
+        ; back rather than free it: the caller still owes the client an answer
+        ; and has not been told the document moved.
+        test    qword [rdi + PX_FLAGS], AF_PX_F_HAS_DOC
+        jz      .fail_dispose
+        mov     r14, rdi
+        mov     rdi, [rsp + 32]
+        lea     rsi, [r14 + PX_DOC]
+        mov     rdx, AF_JSONDOC_SIZE
+        call    af_mem_copy
+        mov     rdi, r14
+        add     rdi, PX_DOC
+        mov     rsi, AF_JSONDOC_SIZE
+        call    af_mem_zero
+        and     qword [r14 + PX_FLAGS], ~AF_PX_F_HAS_DOC
+        mov     rdi, r14
+.fail_dispose:
         call    af_prov_exchange_dispose
 .fail_done:
-        mov     rax, [rsp + 88]
+        mov     rax, [rsp + 48]
         AF_LEAVE
-.no_target:
-        AF_LEAVE_ERR AF_E_ROUTE_NO_TARGET
+.wrong_family:
+        ; The exchange exists but has nothing to do; disposing it hands the
+        ; document back through the same path a failed attempt uses.
+        mov     rax, AF_E_ROUTE_NO_TARGET
+        jmp     .fail
 .at_capacity:
         AF_LEAVE_ERR AF_E_ROUTE_CAPACITY
 .invalid:
         AF_LEAVE_ERR AF_E_INVALID
 
+; ---------------------------------------------------------------------------
+; af_prov_attempt_start(af_prov_exchange *x) -> af_status
+;
+; Chooses a target and puts a transfer in flight against it. Called for the
+; first attempt and for every fallback, so everything that differs between
+; attempts — the target, the URL, the credential, the concurrency slot — is
+; established here and nowhere else.
+; ---------------------------------------------------------------------------
+        global af_prov_attempt_start
+af_prov_attempt_start:
+        AF_ENTER (AF_ROUTING_MAX_TARGETS * RC_SIZE + 192)
+;   [rsp +   0]  af_route_request (RQ_SIZE)
+;   [rsp +  64]  candidate count      [rsp +  88]  chosen candidate
+;   [rsp +  72]  selected index       [rsp +  96]  route state
+;   [rsp +  80]  now_ns               [rsp + 104]  cursor
+;   [rsp + 192]  candidates
+%define AT_REQUEST 0
+%define AT_CANDS   192
+        test    rdi, rdi
+        jz      .invalid
+        mov     rbx, rdi
+        ; The refusal path reports through the route's counters, and it can be
+        ; reached before those counters have been looked up — a circuit that
+        ; just opened leaves no candidates at all, so the walk ends before the
+        ; route state is fetched.
+        mov     qword [rsp + 96], 0
+        mov     r12, [rbx + PX_ROUTE]
+        test    r12, r12
+        jz      .invalid
+        mov     r13, [rbx + PX_ROUTING]
+        test    r13, r13
+        jz      .invalid
+
+        mov     rdi, r13
+        call    af_routing_now_ns
+        mov     [rsp + 80], rax
+
+        mov     rdi, r13
+        mov     rsi, [rbx + PX_CONFIG]
+        mov     rdx, r12
+        mov     rcx, [rbx + PX_FAMILY_BIT]
+        mov     r8, [rbx + PX_REQ_CAPS]
+        lea     r9, [rsp + AT_REQUEST]
+        call    af_prov_fill_request
+        mov     rax, [rbx + PX_TRIED]
+        mov     [rsp + AT_REQUEST + RQ_TRIED], rax
+        mov     rax, [rsp + 80]
+        mov     [rsp + AT_REQUEST + RQ_NOW_NS], rax
+
+        lea     rdi, [rsp + AT_REQUEST]
+        lea     rsi, [rsp + AT_CANDS]
+        mov     rdx, AF_ROUTING_MAX_TARGETS
+        call    af_route_candidates
+        cmp     rax, 0
+        jle     .no_target
+        mov     [rsp + 64], rax
+
+        ; The route's cursor, for round-robin. The whitepaper is explicit that
+        ; it advances first and the new value selects, and that it survives a
+        ; reload — so it lives on the runtime state, not on the snapshot.
+        mov     rdi, r13
+        mov     rsi, [r12 + RTE_ID]
+        call    af_routing_route
+        mov     [rsp + 96], rax
+        xor     ecx, ecx
+        test    rax, rax
+        jz      .cursor_ready
+        cmp     qword [r12 + RTE_POLICY], AF_POLICY_ROUND_ROBIN
+        jne     .cursor_ready
+        inc     qword [rax + RS_CURSOR]
+        mov     rcx, [rax + RS_CURSOR]
+.cursor_ready:
+        mov     [rsp + 104], rcx
+
+        mov     rdi, [r12 + RTE_POLICY]
+        lea     rsi, [rsp + AT_CANDS]
+        mov     rdx, [rsp + 64]
+        mov     rcx, [rsp + 104]
+        call    af_route_select
+        cmp     rax, 0
+        jl      .no_target
+        mov     [rsp + 72], rax
+
+        imul    rax, rax, RC_SIZE
+        lea     rcx, [rsp + AT_CANDS]
+        add     rax, rcx
+        mov     [rsp + 88], rax
+
+        ; Record the choice before anything can fail, so a target that was
+        ; attempted is never offered to this request again — whatever happens
+        ; next (M7 DoD 7).
+        mov     rcx, [rax + RC_INDEX]
+        mov     rdx, 1
+        shl     rdx, cl
+        or      [rbx + PX_TRIED], rdx
+
+        mov     rcx, [rax + RC_TARGET]
+        mov     [rbx + PX_TARGET], rcx
+        mov     rcx, [rax + RC_PROVIDER]
+        mov     [rbx + PX_PROVIDER], rcx
+        mov     rcx, [rax + RC_STATE]
+        mov     [rbx + PX_STATE_PTR], rcx
+
+        ; Claim the concurrency slot. From here every path out of this exchange
+        ; has to release it, which is why the flag exists and why exactly one
+        ; function releases it.
+        mov     rdi, rcx
+        call    af_health_begin
+        mov     [rbx + PX_WAS_PROBE], rax
+        or      qword [rbx + PX_FLAGS], AF_PX_F_COUNTED
+        inc     qword [rbx + PX_ATTEMPT]
+        mov     rax, [rsp + 80]
+        mov     [rbx + PX_ATTEMPT_NS], rax
+        mov     rax, [rsp + 96]
+        test    rax, rax
+        jz      .counted
+        inc     qword [rax + RS_SERVED]
+.counted:
+
+        ; Everything from here is this attempt's own: a fallback rebuilt them
+        ; against a different provider.
+        lea     rdi, [rbx + PX_URL]
+        mov     rsi, [rbx + PX_PROVIDER]
+        mov     rdx, [rbx + PX_FAMILY]
+        call    af_prov_build_url
+        test    rax, rax
+        js      .done
+
+        lea     rdi, [rbx + PX_DOC]
+        call    af_json_doc_root
+        mov     rcx, [rbx + PX_TARGET]
+        mov     rdx, [rcx + RTG_UPSTREAM_MODEL]
+        mov     rsi, rax
+        lea     rdi, [rbx + PX_BODY]
+        call    af_prov_rewrite_body
+        test    rax, rax
+        js      .done
+
+        mov     rdi, rbx
+        call    af_prov_build_headers
+        test    rax, rax
+        js      .done
+
+        mov     rdi, rbx
+        call    af_curl_easy_new
+        test    rax, rax
+        jz      .nomem
+        mov     [rbx + PX_EASY], rax
+
+        mov     rdi, rbx
+        call    af_prov_configure_easy
+        test    rax, rax
+        js      .done
+
+        mov     rax, [rbx + PX_ENGINE]
+        test    rax, rax
+        jz      .invalid
+        mov     rdi, [rax + PE_MULTI]
+        mov     rsi, [rbx + PX_EASY]
+        call    af_curl_multi_add
+        test    eax, eax
+        jnz     .curl_failed
+        or      qword [rbx + PX_FLAGS], AF_PX_F_ADDED
+        mov     qword [rbx + PX_STATE], AF_PX_ACTIVE
+
+        ; A new attempt starts with none of the previous one's answer.
+        mov     qword [rbx + PX_STATUS], 0
+        mov     qword [rbx + PX_BODY_BYTES], 0
+        and     qword [rbx + PX_FLAGS], ~AF_PX_F_UPSTREAM_SSE
+        AF_LEAVE_OK
+
+.no_target:
+        mov     rax, [rbx + PX_ROUTING]
+        test    rax, rax
+        jz      .no_target_done
+        mov     rax, [rsp + 96]
+        test    rax, rax
+        jz      .no_target_done
+        inc     qword [rax + RS_REFUSED]
+.no_target_done:
+        AF_LEAVE_ERR AF_E_ROUTE_NO_TARGET
+.curl_failed:
+        AF_LEAVE_ERR AF_E_UP_CONNECT_FAILED
+.nomem:
+        AF_LEAVE_ERR AF_E_NOMEM
+.done:
+        AF_LEAVE
+.invalid:
+        AF_LEAVE_ERR AF_E_INVALID
+
+; ---------------------------------------------------------------------------
+; af_prov_fill_request(af_routing *rt, af_config *cfg, af_cfg_route *route,
+;                      u64 family_bit, u64 caps, af_route_request *out) -> void
+;
+; Six arguments and a struct to fill; separated only so the attempt above reads
+; as a sequence of decisions rather than a sequence of stores.
+; ---------------------------------------------------------------------------
+        global af_prov_fill_request
+af_prov_fill_request:
+        test    r9, r9
+        jz      .done
+        mov     [r9 + RQ_ROUTING], rdi
+        mov     [r9 + RQ_CONFIG], rsi
+        mov     [r9 + RQ_ROUTE], rdx
+        mov     [r9 + RQ_FAMILY], rcx
+        mov     [r9 + RQ_CAPS], r8
+        mov     qword [r9 + RQ_TRIED], 0
+        mov     qword [r9 + RQ_NOW_NS], 0
+.done:
+        ret
+
+; ---------------------------------------------------------------------------
+; af_prov_attempt_release(af_prov_exchange *x, af_status verdict) -> void
+;
+; Ends the current attempt: the provider's concurrency slot goes back and the
+; outcome is recorded against its circuit. The claim flag makes this exactly
+; once per attempt however the attempt ended — completion, fallback,
+; cancellation, or shutdown (M7 DoD 9).
+; ---------------------------------------------------------------------------
+        global af_prov_attempt_release
+af_prov_attempt_release:
+        AF_ENTER 32
+        test    rdi, rdi
+        jz      .done
+        mov     rbx, rdi
+        mov     [rsp], rsi
+        test    qword [rbx + PX_FLAGS], AF_PX_F_COUNTED
+        jz      .done
+        and     qword [rbx + PX_FLAGS], ~AF_PX_F_COUNTED
+
+        mov     r12, [rbx + PX_STATE_PTR]
+        test    r12, r12
+        jz      .done
+
+        mov     rdi, r12
+        mov     rsi, [rbx + PX_WAS_PROBE]
+        call    af_health_end
+
+        ; A cancelled attempt says nothing about the provider. Recording it as
+        ; a failure would let a client that presses stop repeatedly open a
+        ; circuit against a provider that never misbehaved.
+        cmp     qword [rsp], AF_E_UP_CANCELLED
+        je      .done
+
+        cmp     qword [rsp], 0
+        jl      .failure
+
+        ; A success measures the provider. The observed latency is this
+        ; attempt's, not the request's: a fallback's second attempt should not
+        ; be charged with the first one's timeout.
+        mov     rdi, [rbx + PX_ROUTING]
+        call    af_routing_now_ns
+        sub     rax, [rbx + PX_ATTEMPT_NS]
+        jc      .no_latency
+        xor     edx, edx
+        mov     rcx, 1000
+        div     rcx                             ; nanoseconds -> microseconds
+        jmp     .have_latency
+.no_latency:
+        xor     eax, eax
+.have_latency:
+        mov     rdi, r12
+        mov     rsi, [rbx + PX_PROVIDER]
+        mov     rdx, rax
+        call    af_health_success
+        AF_LEAVE
+
+.failure:
+        mov     rdi, [rbx + PX_ROUTING]
+        call    af_routing_now_ns
+        mov     rdi, r12
+        mov     rsi, [rbx + PX_PROVIDER]
+        mov     rdx, rax
+        call    af_health_failure
+.done:
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
+; af_prov_may_fall_back(af_prov_exchange *x, af_status verdict) -> i64
+;
+; docs/API_CONTRACT.md 8, as one function so the rule has one place to be read
+; and one place to be wrong.
+;
+; The committed check is first and is absolute. A debug build treats a fallback
+; attempted after commitment as fatal rather than as a value to return, because
+; by then the client already has a status line and some of a body: continuing
+; would produce a second response on a connection that already has one, and no
+; later test could distinguish that from a protocol defect.
+; ---------------------------------------------------------------------------
+        global af_prov_may_fall_back
+af_prov_may_fall_back:
+        AF_ENTER 16
+        test    rdi, rdi
+        jz      .no
+        mov     rbx, rdi
+        mov     r12, rsi
+
+        test    qword [rbx + PX_FLAGS], AF_PX_F_COMMITTED
+        jnz     .no
+        test    qword [rbx + PX_FLAGS], AF_PX_F_HEAD_SENT
+        jnz     .no
+        test    qword [rbx + PX_FLAGS], AF_PX_F_CANCELLED
+        jnz     .no
+        cmp     qword [rbx + PX_CONN], 0
+        je      .no
+
+        mov     rax, [rbx + PX_ATTEMPT]
+        cmp     rax, [rbx + PX_MAX_ATTEMPTS]
+        jae     .no
+
+        mov     rdi, r12
+        mov     rsi, [rbx + PX_RETRY_MASK]
+        call    af_prov_is_retryable
+        test    rax, rax
+        jz      .no
+        mov     eax, 1
+        AF_LEAVE
+.no:
+        xor     eax, eax
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
 ; ---------------------------------------------------------------------------
 ; af_prov_configure_easy(af_prov_exchange *x) -> af_status
 ;
@@ -1013,7 +1292,15 @@ af_prov_exchange_finish:
         mov     r12, [rbx + PX_CONN]
         mov     [rsp + 16], r12
         test    r12, r12
-        jz      .dispose                        ; nobody left to answer
+        jnz     .have_client
+        ; Nobody left to answer. The attempt still ended, so it is still
+        ; released — and as a cancellation, because a client that walked away
+        ; says nothing about the provider.
+        mov     rdi, rbx
+        mov     rsi, AF_E_UP_CANCELLED
+        call    af_prov_attempt_release
+        jmp     .dispose
+.have_client:
 
         cmp     qword [rsp + 8], 0
         jge     .counted
@@ -1022,6 +1309,45 @@ af_prov_exchange_finish:
         jz      .counted
         inc     qword [rax + PE_FAILED]
 .counted:
+
+        ; Fallback is decided before anything is said to the client, because
+        ; after that it is not available at all (docs/API_CONTRACT.md 8). The
+        ; attempt is released first — its slot goes back and its failure is
+        ; recorded against the provider's circuit — and only then is another
+        ; target chosen, so a provider that just failed is being judged by the
+        ; selector on the strength of that failure.
+        mov     rdi, rbx
+        mov     rsi, [rsp + 8]
+        call    af_prov_may_fall_back
+        test    rax, rax
+        jz      .no_fallback
+
+        mov     rdi, rbx
+        mov     rsi, [rsp + 8]
+        call    af_prov_attempt_release
+        mov     rdi, rbx
+        call    af_prov_attempt_teardown
+        mov     rdi, rbx
+        call    af_prov_attempt_start
+        test    rax, rax
+        js      .fallback_exhausted
+        mov     rax, [rbx + PX_ENGINE]
+        test    rax, rax
+        jz      .fallback_done
+        inc     qword [rax + PE_RETRIED]
+.fallback_done:
+        AF_LEAVE
+
+.fallback_exhausted:
+        ; No second target after all. The client is answered with the failure
+        ; that made this a fallback in the first place, not with the routing
+        ; refusal that ended the search — the first one is what went wrong.
+        mov     qword [rbx + PX_STATE], AF_PX_FINISHING
+        mov     r12, [rsp + 16]
+.no_fallback:
+        mov     rdi, rbx
+        mov     rsi, [rsp + 8]
+        call    af_prov_attempt_release
 
         ; A committed stream cannot change its mind. Whatever happened, the
         ; client already has a 200 and some events; the honest ending is a
@@ -1183,6 +1509,58 @@ af_prov_deliver_buffered:
         AF_LEAVE_ERR AF_E_INVALID
 
 ; ---------------------------------------------------------------------------
+; af_prov_attempt_teardown(af_prov_exchange *x) -> void
+;
+; Releases what belongs to one attempt and keeps what belongs to the request.
+; The handles go; the parsed document, the retained snapshot, the buffers, and
+; the tried set stay, because the next attempt needs all four.
+;
+; The order is the same one af_prov_exchange_dispose uses and for the same
+; reason: freeing an easy handle still registered with a multi handle is
+; undefined behaviour, and the header list is read for as long as the handle
+; exists.
+; ---------------------------------------------------------------------------
+        global af_prov_attempt_teardown
+af_prov_attempt_teardown:
+        AF_ENTER 16
+        test    rdi, rdi
+        jz      .done
+        mov     rbx, rdi
+        mov     r12, [rbx + PX_ENGINE]
+
+        test    qword [rbx + PX_FLAGS], AF_PX_F_ADDED
+        jz      .not_added
+        test    r12, r12
+        jz      .not_added
+        mov     rdi, [r12 + PE_MULTI]
+        test    rdi, rdi
+        jz      .not_added
+        mov     rsi, [rbx + PX_EASY]
+        call    af_curl_multi_remove
+        and     qword [rbx + PX_FLAGS], ~AF_PX_F_ADDED
+.not_added:
+        mov     rdi, [rbx + PX_EASY]
+        test    rdi, rdi
+        jz      .no_easy
+        call    af_curl_easy_free
+        mov     qword [rbx + PX_EASY], 0
+.no_easy:
+        mov     rdi, [rbx + PX_SLIST]
+        test    rdi, rdi
+        jz      .no_slist
+        call    af_curl_slist_free
+        mov     qword [rbx + PX_SLIST], 0
+.no_slist:
+        lea     rdi, [rbx + PX_RESPONSE]
+        call    af_buf_clear
+        lea     rdi, [rbx + PX_CARRY]
+        call    af_buf_clear
+        lea     rdi, [rbx + PX_CTYPE]
+        call    af_buf_clear
+.done:
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
 ; af_prov_exchange_abandon(af_prov_exchange *x) -> void
 ;
 ; Shutdown, not completion. The transfer is removed from the multi handle and
@@ -1224,6 +1602,15 @@ af_prov_exchange_dispose:
         mov     rbx, rdi
         cmp     qword [rbx + PX_STATE], AF_PX_FREE
         je      .done
+
+        ; Whatever path arrived here, an attempt that still holds a slot
+        ; releases it. This is the backstop for M7 DoD 9: every other release
+        ; is on a path that was reasoned about, and this one is on the path
+        ; that was not.
+        mov     rdi, rbx
+        mov     rsi, AF_E_UP_CANCELLED
+        call    af_prov_attempt_release
+
         mov     r12, [rbx + PX_ENGINE]
 
         test    qword [rbx + PX_FLAGS], AF_PX_F_ADDED
@@ -1262,6 +1649,13 @@ af_prov_exchange_dispose:
         call    af_buf_free
         lea     rdi, [rbx + PX_CTYPE]
         call    af_buf_free
+
+        test    qword [rbx + PX_FLAGS], AF_PX_F_HAS_DOC
+        jz      .no_doc
+        lea     rdi, [rbx + PX_DOC]
+        call    af_json_doc_free
+        and     qword [rbx + PX_FLAGS], ~AF_PX_F_HAS_DOC
+.no_doc:
 
         mov     rdi, [rbx + PX_CONFIG]
         test    rdi, rdi

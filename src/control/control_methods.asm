@@ -25,6 +25,7 @@
 %include "control.inc"
 %include "db.inc"
 %include "runtime.inc"
+%include "routing.inc"
 
         extern af_cstr_len
         extern af_mem_eq
@@ -46,6 +47,11 @@
         extern af_jw_member_uint
         extern af_jw_member_int
         extern af_jw_member_bool
+
+        extern af_routing_provider
+        extern af_health_refresh
+        extern af_health_state_name
+        extern af_routing_now_ns
 
         extern af_json_get_string
         extern af_json_get_integer
@@ -80,6 +86,11 @@
 ; --- method names ----------------------------------------------------------
 n_system_version:  db "system.version", 0
 n_system_snapshot: db "system.snapshot", 0
+k_health:          db "health", 0
+k_active:          db "active_requests", 0
+k_latency_us:      db "observed_latency_us", 0
+k_failures:        db "consecutive_failures", 0
+k_opened:          db "circuit_opened_count", 0
 n_providers_list:  db "providers.list", 0
 n_providers_get:   db "providers.get", 0
 n_routes_list:     db "routes.list", 0
@@ -609,10 +620,11 @@ af_ctl_write_auth:
 ;   -> af_status
 ; ---------------------------------------------------------------------------
 af_ctl_write_provider:
-        AF_ENTER 32
+        AF_ENTER 48
         mov     rbx, rdi
         mov     r12, rsi
         mov     r13, rdx
+        mov     [rsp + 8], rcx                  ; af_routing *, may be NULL
 
         mov     rdi, rbx
         call    af_jw_begin_object
@@ -682,6 +694,76 @@ af_ctl_write_provider:
         mov     rdx, [rsp]
         call    af_jw_member_bool
 
+        ; The live view. Absent from a snapshot that predates any traffic,
+        ; which is why every field has a defined value for a provider nothing
+        ; has yet tried: healthy, nothing in flight, nothing measured.
+        mov     r14, [rsp + 8]
+        xor     r15, r15
+        test    r14, r14
+        jz      .no_state
+        mov     rdi, r14
+        mov     rsi, [r12 + PRV_ID]
+        call    af_routing_provider
+        mov     r15, rax
+        test    r15, r15
+        jz      .no_state
+        ; Reported after the cooldown has been applied, so an operator reading
+        ; this sees `half_open` at the moment a probe would be admitted rather
+        ; than `open` until the next request happens to look.
+        mov     rdi, r14
+        call    af_routing_now_ns
+        mov     rdi, r15
+        mov     rsi, rax
+        call    af_health_refresh
+.no_state:
+
+        xor     edi, edi
+        test    r15, r15
+        jz      .health_name
+        mov     rdi, [r15 + PS_HEALTH]
+.health_name:
+        call    af_health_state_name
+        mov     rdx, rax
+        mov     rdi, rbx
+        lea     rsi, [k_health]
+        call    af_jw_member_string
+
+        xor     edx, edx
+        test    r15, r15
+        jz      .write_active
+        mov     rdx, [r15 + PS_ACTIVE]
+.write_active:
+        mov     rdi, rbx
+        lea     rsi, [k_active]
+        call    af_jw_member_uint
+
+        xor     edx, edx
+        test    r15, r15
+        jz      .write_latency
+        mov     rdx, [r15 + PS_EWMA]
+.write_latency:
+        mov     rdi, rbx
+        lea     rsi, [k_latency_us]
+        call    af_jw_member_uint
+
+        xor     edx, edx
+        test    r15, r15
+        jz      .write_failures
+        mov     rdx, [r15 + PS_FAILURES]
+.write_failures:
+        mov     rdi, rbx
+        lea     rsi, [k_failures]
+        call    af_jw_member_uint
+
+        xor     edx, edx
+        test    r15, r15
+        jz      .write_opened
+        mov     rdx, [r15 + PS_OPENED]
+.write_opened:
+        mov     rdi, rbx
+        lea     rsi, [k_opened]
+        call    af_jw_member_uint
+
         mov     rdi, rbx
         call    af_jw_end_object
         AF_LEAVE_OK
@@ -716,6 +798,7 @@ af_ctl_m_providers_list:
         mov     rdi, r12
         mov     rsi, rax
         mov     rdx, [r13 + RT_DB]
+        mov     rcx, [r13 + RT_ROUTING]
         call    af_ctl_write_provider
         inc     r15
         jmp     .loop
@@ -801,6 +884,7 @@ af_ctl_m_providers_get:
         mov     rdi, r12
         mov     rsi, [rsp]
         mov     rdx, [r14 + RT_DB]
+        mov     rcx, [r14 + RT_ROUTING]
         call    af_ctl_write_provider
         AF_LEAVE_OK
 .not_found:
@@ -1225,6 +1309,7 @@ af_ctl_set_provider_state:
         mov     rdi, r12
         mov     rsi, [rsp]
         mov     rdx, [r14 + RT_DB]
+        mov     rcx, [r14 + RT_ROUTING]
         call    af_ctl_write_provider
         AF_LEAVE_OK
 .db_failed:

@@ -51,6 +51,10 @@ SRC_FFI_C      := $(SRC_FFI_SHARED) $(SRC_FFI_DAEMON) $(SRC_FFI_TEST)
 # Assembly test sources. The unit-test binary links every runtime module except
 # the two entry points, so a test may call any exported function directly.
 SRC_TEST_ASM := $(wildcard tests/asm/*.asm)
+# Test-only C. The routing parity bridge reads a JSON corpus and drives the
+# assembly selector over it; it decides nothing and knows no structure offsets,
+# which is why it is allowed to exist on this side of the boundary at all.
+SRC_TEST_C   := $(wildcard tests/ffi/*.c)
 
 # Shared by both binaries. Deliberately small: configuration loading is NOT
 # here, because the console reads state through the control socket and has no
@@ -69,7 +73,7 @@ SRC_TUI_BIN := $(TUI_ENTRY) $(SRC_TUI) $(SRC_SHARED) \
 SRC_TESTS := $(SRC_TEST_ASM) $(SRC_SHARED) $(SRC_CONFIG) $(SRC_HTTP) \
              $(SRC_PROVIDER) $(SRC_ROUTING) $(SRC_MCP) $(SRC_STORAGE) \
              $(SRC_CONTROL) $(SRC_TUI) src/platform/linux_x86_64/daemon.asm \
-             $(SRC_FFI_DAEMON) $(SRC_FFI_TEST)
+             $(SRC_FFI_DAEMON) $(SRC_FFI_TEST) $(SRC_TEST_C)
 
 # ---------------------------------------------------------------------------
 # Toolchain flags.
@@ -137,7 +141,10 @@ TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
         test-provider test-provider-contract test-sse-fragments \
         test-backpressure test-client-cancel test-provider-faults \
         test-stream-soak valgrind-provider \
-        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 \
+        test-routing test-routing-parity test-circuit-timeline \
+        test-fallback-invariant test-routing-concurrency \
+        test-routing-fault-soak valgrind-routing \
+        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 gate-m7 \
         toolchain-versions
 
 help:
@@ -173,6 +180,7 @@ help:
 	  '  make gate-m4        SQLite, migrations, and the control plane' \
 	  '  make gate-m5        Gateway HTTP listener and contract' \
 	  '  make gate-m6        Upstream client, Responses/Chat, streaming' \
+	  '  make gate-m7        Routing, health, circuit breaking, fallback' \
 	  '' \
 	  'Packaging:' \
 	  '  make package        Create a source archive under dist/'
@@ -465,6 +473,46 @@ gate-m6: gate-m5 test-provider test-provider-contract test-sse-fragments \
          test-provider-faults test-stream-soak valgrind-provider
 	$(PYTHON) scripts/gate_m6.py --build-dir $(BUILD_DIR) --skip-suites
 	@printf 'M6 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M7 targets: routing, health, circuit breaking, and fallback.
+#
+# The parity target is the one that matters most. `tests/route_oracle.py`
+# states the selection rules in Python and `src/routing/` states them in
+# assembly; the corpus runs both over the same scenarios and fails on any
+# disagreement. A routing defect answers the request and looks correct, so
+# "does it work" is not a question a test can ask here — "does it agree with an
+# independent statement of the rules" is.
+# ---------------------------------------------------------------------------
+test-routing: build-tests
+	$(DEBUG_DIR)/asmflow-tests --filter route/ --verbose
+
+test-routing-parity: build-tests
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_routing_parity
+
+test-circuit-timeline: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_circuit_timeline
+
+test-fallback-invariant: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_fallback_invariant
+
+test-routing-concurrency: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_routing_concurrency
+
+test-routing-fault-soak: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_routing_fault_soak
+
+valgrind-routing: build-tests
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite \
+	  --errors-for-leak-kinds=definite --track-origins=yes \
+	  --error-exitcode=99 \
+	  $(DEBUG_DIR)/asmflow-tests --filter route/
+
+gate-m7: gate-m6 test-routing test-routing-parity test-circuit-timeline \
+         test-fallback-invariant test-routing-concurrency \
+         test-routing-fault-soak valgrind-routing
+	$(PYTHON) scripts/gate_m7.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M7 gate passed for AsmFlow %s\n' '$(VERSION)'
 
 package: check
 	@mkdir -p dist

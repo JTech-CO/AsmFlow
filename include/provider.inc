@@ -119,6 +119,11 @@
 %define AF_PX_F_TRAILER_SENT 128    ; the terminating chunk has been written
 %define AF_PX_F_STATUS_SEEN  256    ; a status line has been parsed
 %define AF_PX_F_OVERFLOW     512    ; a ceiling was passed while receiving
+; A provider's concurrency slot is held. Exactly one release per claim, from
+; whichever path ends the attempt — which is what M7 DoD 9 asks for.
+%define AF_PX_F_COUNTED      1024
+; The parsed request body belongs to this exchange.
+%define AF_PX_F_HAS_DOC      2048
 
 ; --- af_prov_exchange (304 bytes) -------------------------------------------
 ; One in-flight upstream request. Fixed size and allocated from a table, so a
@@ -147,7 +152,25 @@
 %define PX_SLOT           280
 %define PX_STARTED_NS     288
 %define PX_SSE_LIMIT      296   ; limits.sse_event_max_bytes for this exchange
-%define PX_SIZE           304
+; --- the attempt state, added with routing and fallback in M7 --------------
+; An exchange may make several attempts against different targets, so what
+; belongs to *this attempt* is separated from what belongs to the request.
+;
+; The parsed request body is owned here rather than by the dispatcher, because
+; a second attempt has to re-emit it with a different upstream model. Freeing
+; it after the first attempt would leave a fallback with nothing to send.
+%define PX_DOC            304   ; af_json_doc, 32 bytes — OWNED once started
+%define PX_ROUTING        336   ; af_routing * (BORROWED, the runtime's)
+%define PX_TRIED          344   ; bitmap of target indices this request tried
+%define PX_ATTEMPT        352   ; 1-based; compared against max_attempts
+%define PX_MAX_ATTEMPTS   360
+%define PX_RETRY_MASK     368   ; AF_RETRY_* from the route's fallback
+%define PX_STATE_PTR      376   ; af_prov_state * for the current attempt
+%define PX_WAS_PROBE      384   ; the current attempt is a half-open probe
+%define PX_FAMILY_BIT     392   ; AF_EPF_* being served
+%define PX_REQ_CAPS       400   ; capabilities the body implies
+%define PX_ATTEMPT_NS     408   ; when the current attempt started
+%define PX_SIZE           416
 
 ; --- af_prov_engine ---------------------------------------------------------
 %define PE_MULTI          0
@@ -161,7 +184,8 @@
 %define PE_TOTAL          64    ; exchanges started since boot
 %define PE_FAILED         72    ; exchanges that ended in an upstream failure
 %define PE_CANCELLED      80    ; exchanges the client abandoned
-%define PE_EXCHANGES      88
+%define PE_RETRIED        88    ; attempts that fell back to another target
+%define PE_EXCHANGES      96
 %define PE_SIZE           (PE_EXCHANGES + AF_PROV_MAX_EXCHANGES * PX_SIZE)
 
 ; --- timerfd ----------------------------------------------------------------

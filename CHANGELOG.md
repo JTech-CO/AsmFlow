@@ -9,10 +9,48 @@ once executable releases begin.
 
 ### Planned
 
-- Upstream client, streaming, and the Responses/Chat data path.
-- Deterministic routing, health state, circuit breaking, and safe fallback.
 - MCP stdio and Streamable HTTP supervision.
 - ncursesw TUI.
+- Security hardening, observability, and packaging.
+
+## [0.6.0] - 2026-08-27
+
+### Added
+
+- Routing. A request is matched to a target by the whitepaper's six filters in
+  its order, and then by the route's policy: priority, round-robin, or
+  EWMA least-latency. `tests/route_oracle.py` states the same rules in Python
+  and `tests/test_routing_parity.py` runs both over a generated corpus of some
+  fourteen hundred scenarios, failing on any disagreement.
+- Provider health and a circuit breaker (ADR 0012). Consecutive failures
+  degrade a provider and then open its circuit; the configured cooldown makes
+  it half-open; one probe decides whether it closes or reopens with a longer
+  wait. Every deadline is monotonic.
+- Observed latency as an integer EWMA, so no routing decision depends on
+  floating-point rounding.
+- Pre-commit fallback. A retryable failure the route names moves the request to
+  another target, bounded by `fallback.max_attempts` and by the set of targets
+  this request has already tried.
+- Per-provider `max_concurrency`, enforced by a counter that is claimed once
+  and released through one function on every path an attempt can end.
+- `providers.list` now reports live state: `health`, `active_requests`,
+  `observed_latency_us`, `consecutive_failures`, and `circuit_opened_count`.
+- `af_monotonic_now`, a value-returning clock reading.
+- `scripts/gate_m7.py` and `make gate-m7`, with the five suites HARNESS.md M7
+  names.
+
+### Fixed
+
+- `af_monotonic_ns` takes an out-pointer and returns a status. Two call sites
+  used it as if it returned the reading, so it wrote eight bytes of clock over
+  whatever the register happened to hold. In M6 that register held the
+  configuration snapshot, and every generation request wrote a nanosecond count
+  over its reference count — the snapshot was never freed, and nothing crashed
+  or failed a test. `af_monotonic_now` removes the trap and the M7 gate checks
+  every remaining call site.
+- A route's `endpoint_families` was no longer checked once selection moved into
+  the router, so a route configured for chat completions would serve a
+  Responses request. Caught by an M6 test that had asserted the old behaviour.
 
 ## [0.5.0] - 2026-08-27
 

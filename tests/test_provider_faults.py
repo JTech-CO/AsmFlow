@@ -125,12 +125,25 @@ class UpstreamFailureTests(unittest.TestCase):
             self.assertLess(elapsed, 15.0, "the idle-stream timeout did not apply")
 
     def test_the_daemon_survives_every_upstream_failure(self) -> None:
+        """Twenty failures in a row, and the daemon is still answering.
+
+        The first few are 502s. After that the circuit opens and the answer
+        becomes a routing refusal instead — which is the breaker working, not a
+        regression, so what is asserted here is that every request got a
+        documented answer and the process is still up. The transition itself is
+        `tests/test_circuit_timeline.py`'s subject.
+        """
         with ProviderGateway(truncating_handler(b"{")) as fixture:
+            statuses = set()
             for _ in range(20):
-                fixture.post_json("/v1/chat/completions", chat_request())
+                statuses.add(
+                    fixture.post_json("/v1/chat/completions", chat_request()).status
+                )
             self.assertTrue(fixture.alive())
+            self.assertLessEqual(statuses, {502, 503})
+            self.assertIn(502, statuses, "no attempt ever reached the provider")
             response = fixture.post_json("/v1/chat/completions", chat_request())
-            self.assertEqual(502, response.status)
+            self.assertIn(response.status, (502, 503))
 
 
 class CancellationTests(unittest.TestCase):

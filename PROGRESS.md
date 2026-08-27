@@ -2,7 +2,7 @@
 
 ## Current phase
 
-`M7 — Routing, health, circuit breaking, and fallback`
+`M8 — MCP stdio supervisor`
 
 ## Completed
 
@@ -149,20 +149,51 @@
   - 30 assembly tests / 115 checks for `prov/`, 68 provider integration tests
     across four suites, Valgrind clean.
 
+- 2026-08-27: M7 routing, health, circuit breaking, and fallback complete
+  (`make gate-m7`).
+  - `src/routing/`: candidate filtering in the whitepaper's documented order,
+    the three policies the schema names, provider health with a circuit
+    breaker, and observed latency as an integer EWMA.
+  - The rules are stated twice and compared (ADR 0012). `tests/route_oracle.py`
+    states them in Python and never links into the product;
+    `tests/test_routing_parity.py` runs both over about fourteen hundred
+    generated scenarios and fails on any disagreement in either the candidate
+    set or the selection. Deliberately breaking four rules — inverting a
+    tie-break, walking round-robin backwards, ranking unmeasured latency first,
+    admitting a target at its concurrency ceiling — was caught by the corpus
+    each time.
+  - Runtime state is keyed by identifier and outlives every snapshot, so a
+    reload that reorders providers cannot move an open circuit from one to
+    another.
+  - The selector is a pure function: no clock, no allocation, no mutation. The
+    gate checks its call list rather than inferring purity from the
+    hundred-repetition determinism test passing.
+  - Fallback happens only before the commit point. That barrier turned out to
+    be unreachable from the integration suite — every failure class that can
+    occur after a head is written is a transport failure and none is retryable
+    — so removing it changed nothing there. It is asserted directly in
+    `tests/asm/test_provider.asm` instead, and removing it now fails two tests.
+  - A concurrency slot is claimed in one place and released in one, on every
+    path an attempt can end: success, failure, fallback, cancellation, timeout,
+    and shutdown each have their own test.
+  - `providers.list` reports live health, so an operator can see why traffic
+    stopped reaching a provider.
+  - 47 assembly tests / 183 checks across `route/` and `prov/`, 1400-scenario
+    parity corpus, and five integration suites.
+
 ## Next actions
 
-1. Implement the routing policies the schema already names: round-robin and
-   EWMA least-latency alongside the priority ordering M6 uses.
-2. Add health checking against each provider's configured `health.path`, and
-   the circuit breaker its thresholds and cooldown describe.
-3. Implement pre-commit fallback: `fallback.retryable` already maps onto the
-   `AF_E_UP_*` classes and `af_prov_is_retryable` already answers the question;
-   what is missing is the attempt loop and its `max_attempts` bound.
-4. Enforce `max_concurrency` per provider, alongside the existing global
-   `limits.max_active_requests`.
-5. Add `scripts/gate_m7.py`: a routing parity corpus against
-   `tests/route_oracle.py`, a breaker state-machine suite, and a fallback
-   corpus that asserts no fallback ever occurs after the commit point.
+1. Spawn MCP stdio servers with `execve`-style argument vectors and an
+   allowlisted environment, never through a shell.
+2. Implement the JSON-RPC framing and the `mcp_frame_max_bytes` ceiling on what
+   accumulates, the way the control plane and the HTTP header section already
+   do.
+3. Implement era detection: the modern `server/discover` probe, and the
+   version-isolated legacy initialize adapter (ADR 0004).
+4. Supervise: restart policy, backoff, the crash-loop budget, and stderr
+   capture bounded by `stderr_line_max_bytes`.
+5. Add `scripts/gate_m8.py`, and replace the `mcp.*` control methods'
+   `unsupported_in_this_build` answers with real ones.
 
 ## Open questions
 
@@ -247,13 +278,21 @@
 | 2026-08-27 | The outbox is compacted as it drains | A buffer with a write cursor keeps sent bytes until it empties completely, which for a stream is never until the stream ends. Without compaction a bounded outbox would have to hold the whole stream, which is the opposite of what bounding it is for. |
 | 2026-08-27 | An upstream status classifies the response; it does not decide whether to send one | The transport succeeding means there IS a response. Turning every non-2xx into AsmFlow's own 502 would throw away the provider's explanation, which is usually the more useful of the two. |
 | 2026-08-27 | Streaming is framed with chunked transfer coding | A streamed response has no length to state when its head is written. `Connection: close` plus a raw stream would work and would end the connection; chunked keeps it reusable. |
+| 2026-08-27 | Routing state is keyed by identifier, not by array position (ADR 0012) | A reload can add, remove, or reorder providers. Keying on index would move an open circuit to whichever provider now occupies that slot, and the symptom would be a healthy provider starved of traffic while a broken one received all of it. |
+| 2026-08-27 | The routing rules are stated twice and compared | A routing defect answers the request, and the answer parses, and nothing is logged. "Does it work" is not a question a test can ask; "does it agree with an independent statement of the rules" is. Four deliberate mutations confirmed the corpus discriminates. |
+| 2026-08-27 | The selector reads no clock, allocates nothing, and mutates nothing | Determinism asserted by repetition is a property of those repetitions. Purity checked against the call list is a property of the code. |
+| 2026-08-27 | Every tie-break is applied even where the preceding key already decided | The oracle applies them all. A shortcut that is correct today would make the parity test compare two different algorithms that happen to agree. |
+| 2026-08-27 | Every routing policy is named explicitly, with no default branch | A fourth policy added to the schema later would otherwise be served silently as whichever one it fell through to. |
+| 2026-08-27 | The concurrency counter is claimed in one place and released in one | A counter that is not returned on some path does not fail visibly: the provider looks progressively busier until it is permanently ineligible, and nothing in a log says why. |
+| 2026-08-27 | A cancelled attempt is not recorded as a provider failure | Otherwise a client pressing stop repeatedly could open a circuit against a provider that never misbehaved. |
+| 2026-08-27 | `af_monotonic_now` exists so a caller can ask for a reading | The out-parameter form is a trap in an assembly call site: a stale `rdi` writes eight bytes of clock over whatever it pointed at and returns a status that reads like a plausible timestamp. M6 shipped exactly that over the configuration snapshot's reference count, and nothing crashed. |
 | 2026-08-27 | A test daemon is ready when it says it is, not when its socket answers | The control socket binds several startup steps before the upstream engine and the data-plane listener open their own descriptors, and that ordering is deliberate: an operator connecting mid-start should see `ready: false` rather than a refused connection. A descriptor baseline taken the moment the socket answered was counting a daemon that had not finished starting, and would then see three descriptors appear from nowhere — which is how the M4 disconnect test failed on one CI machine and passed on another from the same commit. |
 | 2026-08-27 | A suite that needs a binary skips from the constructor, not from each test class | `make check` is the buildless M0 gate, so a suite needing a daemon must skip there rather than error. Stated per class it was forgotten by all seventeen M5 classes; stated once on the only path that spawns a daemon it cannot be. `make check-buildless` reproduces the condition on a machine that has built. |
 | 2026-08-27 | A generation endpoint answers `unsupported_in_this_build`, not `not_ready` and not an empty completion | "A subsystem is absent from this binary" is a different fact from "a present subsystem is not usable yet", and an empty completion is indistinguishable from a real one. |
 
 ## Last passed gate
 
-`make gate-m6` at AsmFlow 0.5.0 — M0 through M6 all green.
+`make gate-m7` at AsmFlow 0.6.0 — M0 through M7 all green.
 See the run recorded in `CHANGELOG.md`; the counts are printed by the gate
 itself rather than restated here, because a number copied by hand is a number
 that goes stale.

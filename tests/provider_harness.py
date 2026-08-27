@@ -26,6 +26,11 @@ def provider_config(
     connect_ms: int = 2000,
     request_ms: int = 30000,
     idle_stream_ms: int = 5000,
+    # Generous by default, because most suites are not about the concurrency
+    # ceiling and should not trip over it: the base fixture's 4 would refuse
+    # the fifth of eight concurrent streams, which reads as a streaming defect
+    # rather than as the routing filter doing its job.
+    max_concurrency: int = 64,
     auth: dict | None = None,
     extra_targets=(),
 ):
@@ -39,6 +44,7 @@ def provider_config(
         provider["base_url"] = base_url
         provider["auth"] = auth or {"type": "none"}
         provider["allow_insecure_private_http"] = True
+        provider["max_concurrency"] = max_concurrency
         provider["timeouts"] = {
             "connect_ms": connect_ms,
             "request_ms": request_ms,

@@ -871,26 +871,22 @@ af_http_ep_generation:
         jl      .free_and_unsupported
         mov     r14, rax
 
-        lea     rdi, [rsp + GEN_DOC]
-        call    af_json_doc_root
-        mov     r13, rax
-
+        ; The parsed document goes with the request. A fallback attempt has to
+        ; re-emit the body against a different upstream model, so it has to
+        ; outlive this function; on success the exchange owns it, and on
+        ; failure it comes back and is released below.
         mov     rdi, r12
         mov     rsi, rbx
         mov     rdx, r15
         mov     rcx, r14
-        mov     r8, r13
+        lea     r8, [rsp + GEN_DOC]
         call    af_prov_exchange_start
         mov     r14, rax
-
-        ; The document is released either way. On the success path the request
-        ; body was already re-emitted into the exchange's own buffer, so
-        ; nothing downstream reads it again.
-        lea     rdi, [rsp + GEN_DOC]
-        call    af_json_doc_free
-
         test    r14, r14
         jns     .suspended
+
+        lea     rdi, [rsp + GEN_DOC]
+        call    af_json_doc_free
         mov     rdi, rbx
         cmp     r14, AF_E_ROUTE_NO_TARGET
         je      .no_target

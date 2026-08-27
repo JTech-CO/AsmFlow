@@ -250,7 +250,67 @@ Notes on the framing and state codes:
 Upstream API error bodies may be passed through when they are valid JSON and below the configured
 limit. AsmFlow still adds its request ID header and records a normalized error class internally.
 
-## 8. Retry and fallback contract
+## 8. Routing, health, and fallback
+
+### Choosing a target
+
+A request names a route alias. The route names targets, each naming a provider.
+A target is eligible when all six of these hold, checked in this order:
+
+1. the provider is enabled;
+2. the provider speaks the endpoint family being served — the capability bit
+   says it supports the API, and the adapter says which shape it speaks, so a
+   provider advertising `responses` behind an `openai_chat` adapter is not
+   eligible for a Responses request;
+3. the provider advertises every capability the request body implies;
+4. the provider's circuit is not open, or its cooldown has elapsed;
+5. the provider has fewer than `max_concurrency` attempts in flight;
+6. this request has not already tried that target.
+
+Eligible targets keep their configured order. The route's `policy` then picks
+one:
+
+- `priority`: the lowest `priority` value, ties broken by configured order and
+  then by provider identifier, bytewise.
+- `round_robin`: a per-route cursor advances and selects `cursor mod count`.
+  The cursor survives a configuration reload and the new count is applied to
+  it, so changing a route's targets does not restart the rotation.
+- `least_latency`: the lowest observed latency, where a target with no
+  measurement ranks after every measured one and a half-open target ranks last.
+  A half-open target is a probe rather than a choice; ranking it on its recorded
+  latency would defeat the circuit breaker that put it there.
+
+Observed latency is an exponentially weighted moving average of successful
+attempts, computed as an integer ratio. No routing decision depends on
+floating-point rounding.
+
+When nothing is eligible the request is answered `no_eligible_target`.
+
+### Provider health
+
+A provider is `healthy`, `degraded`, `open`, `half_open`, or `disabled`.
+
+- consecutive failures below `health.failure_threshold` make it `degraded`, and
+  a degraded provider still receives traffic;
+- reaching the threshold opens the circuit for `health.open_cooldown_ms`;
+- an open circuit receives nothing, and the cooldown elapsing makes it
+  `half_open`;
+- a half-open circuit admits exactly one probe;
+- `health.success_threshold` consecutive successes close it;
+- a failed probe reopens it with a longer cooldown, bounded, so a provider that
+  is down for a long time is probed less and less often rather than at a fixed
+  rate;
+- `disabled` is the operator's decision and is never reached from a health
+  result.
+
+Every deadline is monotonic. A cancelled request — one whose client
+disconnected — is not recorded as a provider failure.
+
+State is keyed by provider identifier and survives a configuration reload, so
+an operator reloading during an incident does not reset the circuits that
+incident opened.
+
+### Fallback
 
 Fallback is not a generic retry loop.
 
@@ -349,7 +409,10 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 
 - `system.snapshot`
 - `system.version`
-- `providers.list`
+- `providers.list` — configuration plus live state: `health`,
+  `active_requests`, `observed_latency_us`, `consecutive_failures`, and
+  `circuit_opened_count`. A provider nothing has yet tried reports `healthy`
+  with zeroes rather than omitting the fields.
 - `providers.get`
 - `routes.list`
 - `routes.get`

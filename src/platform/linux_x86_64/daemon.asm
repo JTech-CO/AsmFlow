@@ -32,6 +32,7 @@
 %include "loop.inc"
 %include "runtime.inc"
 %include "provider.inc"
+%include "routing.inc"
 
         extern af_out_bytes
         extern af_out_cstr
@@ -82,6 +83,9 @@
 
         extern af_prov_engine_init
         extern af_prov_engine_shutdown
+
+        extern af_routing_init
+        extern af_routing_free
 
         extern af_signal_mask_build
         extern af_signals_block
@@ -505,7 +509,8 @@ af_daemon_on_signal:
 %define CTX_CTL    (CTX_LOOP + LOOP_SIZE)
 %define CTX_HTTP   (CTX_CTL + CTLS_SIZE)
 %define CTX_PROV   (CTX_HTTP + HS_SIZE)
-%define CTX_SIZE   (CTX_PROV + PE_SIZE)
+%define CTX_ROUTING (CTX_PROV + PE_SIZE)
+%define CTX_SIZE   (CTX_ROUTING + RTB_SIZE)
 
 ; Bits in CTX_FLAGS, so teardown knows what was actually acquired.
 %define CTX_F_ARENA   1
@@ -515,6 +520,7 @@ af_daemon_on_signal:
 %define CTX_F_CTL     16
 %define CTX_F_HTTP    32
 %define CTX_F_PROV    64
+%define CTX_F_ROUTING 128
 
 ; ---------------------------------------------------------------------------
 ; af_daemon_run(const char *config_path_or_null) -> int exit code
@@ -644,7 +650,21 @@ af_daemon_run:
         test    rax, rax
         js      .control_failed
 
-        ; --- 8. the upstream client ---
+        ; --- 8. routing state ---
+        ;
+        ; Health, circuits, and round-robin cursors. Kept apart from the
+        ; configuration snapshot because it has to survive a reload: a circuit
+        ; that opened because a provider is down must stay open across the
+        ; reload that happens while it is down.
+        lea     rdi, [rbx + CTX_ROUTING]
+        call    af_routing_init
+        test    rax, rax
+        js      .internal
+        or      qword [rbx + CTX_FLAGS], CTX_F_ROUTING
+        lea     rax, [rbx + CTX_ROUTING]
+        mov     [rbx + CTX_RT + RT_ROUTING], rax
+
+        ; --- 9. the upstream client ---
         ;
         ; Before the listener, deliberately. Everything that can fail about
         ; libcurl — a version whose enumerators do not match ours, a timer
@@ -661,7 +681,7 @@ af_daemon_run:
         lea     rax, [rbx + CTX_PROV]
         mov     [rbx + CTX_RT + RT_PROV], rax
 
-        ; --- 9. the data-plane listener ---
+        ; --- 10. the data-plane listener ---
         lea     rdi, [rbx + CTX_HTTP]
         mov     rsi, r13
         lea     rdx, [rbx + CTX_LOOP]
@@ -798,6 +818,14 @@ af_daemon_run:
         lea     rdi, [rbx + CTX_PROV]
         call    af_prov_engine_shutdown
 .no_upstream:
+        ; After the engine, because abandoning an exchange releases a
+        ; concurrency slot against the state this frees.
+        test    qword [rbx + CTX_FLAGS], CTX_F_ROUTING
+        jz      .no_routing
+        mov     qword [rbx + CTX_RT + RT_ROUTING], 0
+        lea     rdi, [rbx + CTX_ROUTING]
+        call    af_routing_free
+.no_routing:
         test    qword [rbx + CTX_FLAGS], CTX_F_CTL
         jz      .no_control
         lea     rdi, [rbx + CTX_CTL]
