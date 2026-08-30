@@ -74,7 +74,10 @@ class UpstreamFailureTests(unittest.TestCase):
     def test_a_name_that_does_not_resolve_is_a_bad_gateway(self) -> None:
         from tests.http_harness import Gateway
 
-        configure = provider_config("http://nonexistent.invalid.test:9/v1")
+        # Public/hostname plaintext is rejected by the shared outbound policy;
+        # HTTPS still reaches the resolver and preserves this test's failure
+        # classification without weakening transport security.
+        configure = provider_config("https://nonexistent.invalid.test:9/v1")
         with Gateway(mutate=configure) as gateway:
             response = gateway.post_json("/v1/chat/completions", chat_request())
             self.assertEqual(502, response.status)

@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-id",
+  "error": {
+    "code": -32022,
+    "message": "Unsupported protocol version",
+    "data": {
+      "supported": [
+        "2099-01-01"
+      ],
+      "requested": "2026-07-28"
+    }
+  }
+}

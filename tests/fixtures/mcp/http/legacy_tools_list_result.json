@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-id",
+  "result": {
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Echo text through the legacy HTTP mock",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      }
+    ]
+  }
+}

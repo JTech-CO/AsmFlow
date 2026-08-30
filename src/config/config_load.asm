@@ -28,6 +28,7 @@
         extern af_json_array_count
         extern af_json_iter_begin
         extern af_json_iter_key
+        extern af_json_iter_key_len
         extern af_json_iter_value
         extern af_json_iter_next
 
@@ -176,8 +177,8 @@ af_cfg_check_keys:
         mov     rdi, r14
         call    af_json_iter_key
         mov     r15, rax                ; key
-        mov     rdi, r15
-        call    af_cstr_len
+        mov     rdi, r14
+        call    af_json_iter_key_len
         mov     [rsp], rax              ; key length
 
         ; Linear scan of the allowed list. The longest list has fourteen

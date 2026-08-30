@@ -33,6 +33,7 @@
 %include "runtime.inc"
 %include "provider.inc"
 %include "routing.inc"
+%include "mcp.inc"
 
         extern af_out_bytes
         extern af_out_cstr
@@ -86,6 +87,10 @@
 
         extern af_routing_init
         extern af_routing_free
+
+        extern af_mcp_sup_init
+        extern af_mcp_sup_shutdown
+        extern af_mcp_set_limits
 
         extern af_signal_mask_build
         extern af_signals_block
@@ -141,9 +146,7 @@ msg_http_ready: db "asmflowd: gateway listening on "
 msg_http_ready_len equ $ - msg_http_ready
 msg_colon: db ":"
 msg_no_upstream:
-        db      "asmflowd: the upstream client is not wired in this build; the", 10
-        db      "asmflowd: health, readiness, and models endpoints are served and", 10
-        db      "asmflowd: generation requests answer unsupported_in_this_build.", 10
+        db      "asmflowd: the console is not wired in this build.", 10
 msg_no_upstream_len equ $ - msg_no_upstream
 msg_listener_failed: db "asmflowd: the gateway listener could not be bound", 10
 msg_listener_failed_len equ $ - msg_listener_failed
@@ -510,7 +513,8 @@ af_daemon_on_signal:
 %define CTX_HTTP   (CTX_CTL + CTLS_SIZE)
 %define CTX_PROV   (CTX_HTTP + HS_SIZE)
 %define CTX_ROUTING (CTX_PROV + PE_SIZE)
-%define CTX_SIZE   (CTX_ROUTING + RTB_SIZE)
+%define CTX_MCP    (CTX_ROUTING + RTB_SIZE)
+%define CTX_SIZE   (CTX_MCP + MS_SIZE)
 
 ; Bits in CTX_FLAGS, so teardown knows what was actually acquired.
 %define CTX_F_ARENA   1
@@ -521,6 +525,7 @@ af_daemon_on_signal:
 %define CTX_F_HTTP    32
 %define CTX_F_PROV    64
 %define CTX_F_ROUTING 128
+%define CTX_F_MCP     256
 
 ; ---------------------------------------------------------------------------
 ; af_daemon_run(const char *config_path_or_null) -> int exit code
@@ -681,7 +686,25 @@ af_daemon_run:
         lea     rax, [rbx + CTX_PROV]
         mov     [rbx + CTX_RT + RT_PROV], rax
 
-        ; --- 10. the data-plane listener ---
+        ; --- 10. the MCP supervisor ---
+        ;
+        ; Nothing is spawned here. A configuration naming a command that does
+        ; not exist should produce a server in `failed` with a diagnosable
+        ; reason, not a daemon that refuses to start — the gateway's other
+        ; duties are unaffected by an MCP server being unavailable.
+        lea     rdi, [rbx + CTX_MCP]
+        lea     rsi, [rbx + CTX_LOOP]
+        lea     rdx, [rbx + CTX_RT]
+        call    af_mcp_sup_init
+        test    rax, rax
+        js      .internal
+        or      qword [rbx + CTX_FLAGS], CTX_F_MCP
+        lea     rax, [rbx + CTX_MCP]
+        mov     [rbx + CTX_RT + RT_MCP], rax
+        lea     rdi, [rbx + CTX_MCP]
+        call    af_mcp_set_limits
+
+        ; --- 11. the data-plane listener ---
         lea     rdi, [rbx + CTX_HTTP]
         mov     rsi, r13
         lea     rdx, [rbx + CTX_LOOP]
@@ -809,9 +832,16 @@ af_daemon_run:
         lea     rdi, [rbx + CTX_HTTP]
         call    af_http_server_shutdown
 .no_http:
-        ; The engine goes after the listener, not before: releasing a
-        ; connection detaches its exchange, and an engine already torn down
-        ; would be one those connections reach into.
+        ; MCP owns a separate curl multi handle in M9. Stop every MCP transfer
+        ; and stdio process before the provider releases process-wide libcurl.
+        test    qword [rbx + CTX_FLAGS], CTX_F_MCP
+        jz      .no_mcp
+        mov     qword [rbx + CTX_RT + RT_MCP], 0
+        lea     rdi, [rbx + CTX_MCP]
+        call    af_mcp_sup_shutdown
+.no_mcp:
+        ; The provider engine owns curl_global_cleanup until that lifetime is
+        ; moved to a common daemon wrapper, so it must be the last curl user.
         test    qword [rbx + CTX_FLAGS], CTX_F_PROV
         jz      .no_upstream
         mov     qword [rbx + CTX_RT + RT_PROV], 0

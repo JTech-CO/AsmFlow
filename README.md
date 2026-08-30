@@ -8,8 +8,8 @@ The runtime is designed around NASM x86-64 assembly, a small and explicit C ABI
 boundary, a local OpenAI-compatible gateway, and a supervisor for local and
 remote Model Context Protocol (MCP) servers.
 
-> **Project status:** `0.6.0` — current phase
-> `M8 — MCP stdio supervisor`. `asmflowd` is a working gateway: it validates
+> **Project status:** `0.8.0` — current phase
+> `M10 — TUI and CLI`. `asmflowd` is a working gateway: it validates
 > its configuration, migrates SQLite, binds a mode-0600 control socket and a
 > TCP listener, answers `/healthz`, `/readyz`, and `/v1/models`, and forwards
 > `/v1/responses` and `/v1/chat/completions` to a routed provider — buffered or
@@ -17,8 +17,19 @@ remote Model Context Protocol (MCP) servers.
 > normalised upstream errors. Routing chooses among a route's targets by
 > priority, round-robin, or observed latency, opens a circuit against a
 > provider that keeps failing, and falls back to another target on a retryable
-> failure — never once a byte has reached the client. The MCP supervisor and
-> the console are not wired yet. See [PROGRESS.md](PROGRESS.md) for the
+> failure — never once a byte has reached the client. The MCP stdio supervisor
+> is wired with literal argument vectors and no shell, an allowlisted bounded
+> environment and explicit working directory, isolated modern `2026-07-28` and
+> legacy `2025-11-25` adapters, validated inventory/readiness, and bounded
+> framing, stderr capture, cancellation, restart, and shutdown paths. MCP
+> Streamable HTTP is also wired: modern requests use matching per-request
+> metadata and version headers over JSON or request-scoped SSE POSTs, while an
+> isolated legacy adapter owns initialization, session, and GET-stream state.
+> Only an unrecognized bodyless HTTP 400 selects legacy. Environment-backed
+> SecretRefs, TLS and plaintext-origin policy, disabled redirects/proxies, and
+> TTL/auth-context-partitioned inventories bound the remote path. The
+> TUI/console is not wired yet. See
+> [PROGRESS.md](PROGRESS.md) for the
 > authoritative per-milestone state and [HARNESS.md](HARNESS.md) for the gate
 > each milestone must pass.
 
@@ -135,7 +146,7 @@ Each milestone has a gate target that asserts its Definition of Done from
 `HARNESS.md`. Running the latest one runs every earlier one:
 
 ```bash
-make gate-m7
+make gate-m9
 ```
 
 - `gate-m0` — repository structure, JSON contracts, examples, secret policy,
@@ -167,6 +178,13 @@ make gate-m7
   listener without an authentication policy refuses to start, ten thousand
   requests leave the resident set flat, and every error code the daemon can
   emit is documented in the API contract.
+- `gate-m6` — the upstream client: a request round-trips to a provider with
+  only `model` rewritten, unknown fields and Unicode survive unchanged, the
+  same SSE stream delivered at eleven packet sizes produces identical bytes, a
+  slow client pauses the upstream rather than growing a buffer, a client that
+  disconnects cancels the transfer it started, every libcurl failure becomes a
+  documented error class, no security-relevant transfer option is left to a
+  libcurl default, and libcurl never owns the wait.
 - `gate-m7` — routing: a fourteen-hundred-scenario corpus agrees with the
   Python routing oracle on every candidate set and every selection, the same
   scenario decides identically a hundred times running, the circuit breaker
@@ -175,13 +193,17 @@ make gate-m7
   client, no target is attempted twice for one request, the concurrency
   counter returns on every path an attempt can end, and a fault-injection soak
   produces no duplicate response and no stream carrying two providers' events.
-- `gate-m6` — the upstream client: a request round-trips to a provider with
-  only `model` rewritten, unknown fields and Unicode survive unchanged, the
-  same SSE stream delivered at eleven packet sizes produces identical bytes, a
-  slow client pauses the upstream rather than growing a buffer, a client that
-  disconnects cancels the transfer it started, every libcurl failure becomes a
-  documented error class, no security-relevant transfer option is left to a
-  libcurl default, and libcurl never owns the wait.
+- `gate-m8` — MCP stdio supervision: literal argv execution with an allowlisted
+  environment and explicit cwd, isolated modern/legacy era selection, strict
+  protocol framing and transactional inventory/readiness, a true sliding crash
+  budget with a manual-reset latch, and bounded stop, timeout, crash,
+  same-process-group helper, and daemon-shutdown reaping paths, including MCP
+  Valgrind coverage.
+- `gate-m9` — MCP Streamable HTTP: modern metadata/header parity and JSON or
+  request-scoped SSE POSTs, physically separate modern/legacy adapters,
+  bodyless-400-only era fallback, legacy session/GET behavior, cancellation,
+  URL/auth/TLS/redirect/proxy policy, and monotonic TTL caches partitioned by
+  configured server and authorization context.
 
 `make help` lists every target.
 
@@ -198,6 +220,8 @@ make gate-m7
 AsmFlow binds to loopback by default, never requires plaintext API keys in its
 configuration, executes MCP stdio servers with `execve`-style argument arrays rather
 than a shell, and does not store prompts or model outputs unless the operator opts in.
+Remote MCP uses HTTPS by default and environment SecretRefs; TLS peer/name checks stay
+enabled, redirects are disabled, and proxy environment variables are ignored.
 Review [SECURITY.md](SECURITY.md) and [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
 before enabling non-loopback access or third-party MCP servers.
 

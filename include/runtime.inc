@@ -36,6 +36,7 @@
 %define RT_LAST_ERROR    88
 %define RT_PROV          96
 %define RT_ROUTING       104   ; af_routing * — health, circuits, cursors
-%define RT_SIZE          112
+%define RT_MCP           112   ; af_mcp_supervisor * (NULL until it is up)
+%define RT_SIZE          120
 
 %endif ; ASMFLOW_RUNTIME_INC

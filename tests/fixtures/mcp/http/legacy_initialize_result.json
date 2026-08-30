@@ -1,0 +1,16 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-id",
+  "result": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {
+      "tools": {},
+      "resources": {},
+      "prompts": {}
+    },
+    "serverInfo": {
+      "name": "asmflow-http-legacy-mock",
+      "version": "1.0.0"
+    }
+  }
+}

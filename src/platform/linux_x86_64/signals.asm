@@ -19,6 +19,7 @@
         default rel
 
 %include "asmflow.inc"
+%include "fileio.inc"
 
         extern af_sys_rt_sigprocmask
         extern af_sys_signalfd4
@@ -26,16 +27,6 @@
         extern af_sys_close
         extern af_status_from_errno
         extern af_mem_zero
-
-%define SIG_BLOCK   0
-%define SIG_SETMASK 2
-
-%define SIGINT   2
-%define SIGQUIT  3
-%define SIGPIPE  13
-%define SIGTERM  15
-%define SIGHUP   1
-%define SIGCHLD  17
 
 %define SFD_NONBLOCK 0x800
 %define SFD_CLOEXEC  0x80000

@@ -292,11 +292,24 @@ Rules:
 
 - `command` is an absolute path by default.
 - `args` are literal strings, not shell fragments.
+- `command`, `cwd`, and every `args` member reject embedded U+0000; Linux process APIs use
+  NUL-terminated strings, so accepting one would validate a suffix that `execve` or `chdir` never sees.
 - Environment starts from an allowlist, not full inherited environment.
+- Each emitted `NAME=value\0` entry has a runtime hard limit of 128 KiB. The
+  complete owned `envp` allocation, including the pointer array and all
+  strings, has a runtime hard limit of 1 MiB; exceeding either limit rejects
+  process startup before allocation or `execve`.
+- A child variable name cannot appear in both `env_allow` and `env`; this prevents duplicate
+  `NAME=value` entries whose observed value would depend on the child runtime. JSON Schema
+  Draft 2020-12 cannot compare dynamic array members with dynamic object keys, so this
+  cross-field constraint is enforced identically by the reference and NASM validators and is
+  recorded in the schema as a `$comment`.
 - `cwd` must exist and satisfy configured path policy.
 - Child stdout is protocol-only; stderr is captured separately.
 
 ## 12. MCP Streamable HTTP server
+
+This is the active runtime contract for the M9 Streamable HTTP adapter.
 
 ```json
 {
@@ -304,6 +317,7 @@ Rules:
   "display_name": "Remote Search MCP",
   "transport": "streamable_http",
   "enabled": true,
+  "required": false,
   "url": "https://mcp.example.invalid/mcp",
   "auth": {
     "type": "bearer_env",
@@ -316,13 +330,30 @@ Rules:
   "timeouts": {
     "connect_ms": 3000,
     "request_ms": 30000,
-    "stream_idle_ms": 30000
+    "idle_stream_ms": 30000
   }
 }
 ```
 
-The modern adapter does not configure session IDs or standalone GET streams. Those fields, if ever
-added for legacy compatibility, belong in a version-specific object and are rejected by the modern schema.
+- `url` is an `http://` or `https://` URL of at most 2048 bytes. Userinfo,
+  fragments, controls, and whitespace are rejected.
+- Plain HTTP is accepted by default only for `127.0.0.1`, `localhost`, and
+  `[::1]`. `allow_insecure_private_http: true` additionally admits RFC 1918,
+  IPv4 link-local, IPv6 unique-local, and IPv6 link-local IP literals. It has
+  no effect for public addresses or hostnames and never disables TLS peer or
+  hostname verification.
+- `auth.type` is `none`, `bearer_env`, or `header_env`. `bearer_env` names an
+  environment variable in `auth.env`; `header_env` names an allowlisted header
+  in `auth.header` and carries an environment SecretRef in `auth.value`, for
+  example `{"source":"env","name":"REMOTE_MCP_TOKEN"}`. A plaintext secret
+  is never a configuration value.
+- Timeout ranges are `connect_ms` 100–600000, `request_ms` 1000–86400000, and
+  `idle_stream_ms` 1000–3600000 milliseconds.
+- Redirects are not followed and proxy environment variables are ignored.
+  Only HTTP(S) schemes are enabled for the transfer.
+- The modern adapter has no session ID, standalone GET, DELETE termination, or
+  `Last-Event-ID` state. Legacy session/GET state exists only inside its
+  version-specific adapter allocation and is not configurable here.
 
 ## 13. Reload behavior
 

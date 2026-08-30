@@ -19,6 +19,8 @@
 %ifndef ASMFLOW_PROVIDER_INC
 %define ASMFLOW_PROVIDER_INC
 
+%include "curl.inc"
+
 ; --- capacity ---------------------------------------------------------------
 ; A hard ceiling on concurrent upstream transfers, independent of what the
 ; configuration asks for. `limits.max_active_requests` may lower it and can
@@ -45,23 +47,6 @@
 ; body ceiling applies first; this bounds the rewritten copy.
 %define AF_PROV_REQUEST_MAX (16 * 1024 * 1024)
 
-; --- libcurl enumerators ----------------------------------------------------
-; Mirrored from <curl/curl.h> and asserted against the linked library at
-; startup by af_prov_check_ordinals, in the order af_curl_poll_ordinals and
-; af_curl_error_ordinals report them (ADR 0007). A mismatch stops the daemon.
-
-%define AF_CURL_POLL_NONE   0
-%define AF_CURL_POLL_IN     1
-%define AF_CURL_POLL_OUT    2
-%define AF_CURL_POLL_INOUT  3
-%define AF_CURL_POLL_REMOVE 4
-
-%define AF_CURL_SOCKET_TIMEOUT -1
-
-%define AF_CURL_CSELECT_IN  0x01
-%define AF_CURL_CSELECT_OUT 0x02
-%define AF_CURL_CSELECT_ERR 0x04
-
 ; The CURLE_* codes provider_error.asm classifies. Anything not listed is an
 ; unclassified upstream failure, which is deliberately not retryable.
 %define AF_CURLE_OK                  0
@@ -80,8 +65,6 @@
 %define AF_CURLE_WRITE               23
 %define AF_CURLE_ABORTED_BY_CALLBACK 42
 %define AF_CURLE_UNSUPPORTED_PROTO   1
-
-%define AF_CURLM_OK 0
 
 ; How many ordinals each accessor reports. The counts are part of the contract
 ; with the shim: a shorter array would be a buffer overrun, so the assembly
@@ -187,13 +170,5 @@
 %define PE_RETRIED        88    ; attempts that fell back to another target
 %define PE_EXCHANGES      96
 %define PE_SIZE           (PE_EXCHANGES + AF_PROV_MAX_EXCHANGES * PX_SIZE)
-
-; --- timerfd ----------------------------------------------------------------
-; struct itimerspec { struct timespec it_interval; struct timespec it_value; }
-%define ITS_INTERVAL_SEC  0
-%define ITS_INTERVAL_NSEC 8
-%define ITS_VALUE_SEC     16
-%define ITS_VALUE_NSEC    24
-%define ITS_SIZE          32
 
 %endif ; ASMFLOW_PROVIDER_INC

@@ -30,6 +30,7 @@
 %include "jsonw.inc"
 %include "runtime.inc"
 %include "errors.inc"
+%include "mcp.inc"
 
         extern af_buf_append
         extern af_buf_clear
@@ -79,6 +80,8 @@
 
         extern af_db_is_open
         extern af_repo_get_operator_disabled
+        extern af_mcp_required_ready
+        extern af_mcp_required_counts
 
         section .rodata
 
@@ -91,6 +94,9 @@ k_listener:   db "listener", 0
 k_routes:     db "routes", 0
 k_enabled:    db "enabled", 0
 k_eligible:   db "eligible", 0
+k_mcp:        db "mcp", 0
+k_required:   db "required", 0
+k_ready_count: db "ready", 0
 k_object:     db "object", 0
 k_data:       db "data", 0
 k_id:         db "id", 0
@@ -480,6 +486,10 @@ af_http_ep_readyz:
         call    af_db_is_open
         test    rax, rax
         jz      .state_known
+        mov     rdi, [r13 + RT_MCP]
+        call    af_mcp_required_ready
+        test    rax, rax
+        jz      .state_known
         mov     r14, 1
 .state_known:
         mov     [rsp + JW_SIZE], r14
@@ -544,6 +554,33 @@ af_http_ep_readyz:
         lea     rsi, [k_listener]
         lea     rdx, [v_ready]
         call    af_jw_member_string
+
+        ; Bounded dependency detail: counts explain readiness without exposing
+        ; server identifiers, stderr, inventory, or any payload-derived value.
+        mov     qword [rsp + JW_SIZE + 8], 0
+        mov     qword [rsp + JW_SIZE + 16], 0
+        test    r13, r13
+        jz      .mcp_counts_known
+        mov     rdi, [r13 + RT_MCP]
+        lea     rsi, [rsp + JW_SIZE + 8]
+        lea     rdx, [rsp + JW_SIZE + 16]
+        call    af_mcp_required_counts
+.mcp_counts_known:
+        lea     rdi, [rsp]
+        lea     rsi, [k_mcp]
+        call    af_jw_key
+        lea     rdi, [rsp]
+        call    af_jw_begin_object
+        lea     rdi, [rsp]
+        lea     rsi, [k_required]
+        mov     rdx, [rsp + JW_SIZE + 8]
+        call    af_jw_member_uint
+        lea     rdi, [rsp]
+        lea     rsi, [k_ready_count]
+        mov     rdx, [rsp + JW_SIZE + 16]
+        call    af_jw_member_uint
+        lea     rdi, [rsp]
+        call    af_jw_end_object
 
         ; Route counts, which is what makes this endpoint tell an operator
         ; something they can act on rather than just a colour.

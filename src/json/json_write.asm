@@ -899,6 +899,29 @@ af_jw_literal:
         AF_LEAVE
 
 ; ---------------------------------------------------------------------------
+; af_jw_raw(af_json_writer *w, const char *json, u64 len) -> af_status
+;
+; Places a fragment of JSON the caller has already produced, without escaping
+; or validating it.
+;
+; This is the one hole in a writer whose whole point is that the grammar is
+; true by construction, so the rule on it is narrow and absolute: the fragment
+; must be text this repository produced. A compile-time constant qualifies; so
+; does something Jansson serialised from a document AsmFlow parsed under its
+; own limits. A value that came from a peer does not, ever — splicing one in
+; would let a provider or an MCP server choose bytes in a document AsmFlow is
+; signing its name to.
+;
+; `scripts/gate_m8.py` checks every call site against that rule, because a
+; comment is not a mechanism.
+; ---------------------------------------------------------------------------
+        global af_jw_raw
+af_jw_raw:
+        AF_ENTER 0
+        call    af_jw_literal
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
 ; af_jw_bool(af_json_writer *w, i64 value) -> af_status
 ; ---------------------------------------------------------------------------
         global af_jw_bool

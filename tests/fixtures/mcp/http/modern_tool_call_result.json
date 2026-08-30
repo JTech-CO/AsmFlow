@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-id",
+  "result": {
+    "resultType": "complete",
+    "content": [
+      {
+        "type": "text",
+        "text": "fixture-result"
+      }
+    ],
+    "isError": false
+  }
+}

@@ -23,6 +23,60 @@ from tests import config_corpus
 from tests.control_client import ControlClient, ControlError
 
 ROOT = Path(__file__).resolve().parents[1]
+MCP_CONTROL_MOCK = (ROOT / "tests" / "mock_mcp_stdio.py").resolve()
+
+
+def mcp_control_configuration(report_path: Path):
+    """Return one optional modern stdio child for control-surface tests."""
+    server = {
+        "id": "stdio-mock",
+        "display_name": "stdio control mock",
+        "transport": "stdio",
+        "enabled": True,
+        "required": False,
+        "command": "/usr/bin/python3",
+        "args": [str(MCP_CONTROL_MOCK), "--report", str(report_path)],
+        "cwd": str(ROOT.resolve()),
+        "env_allow": ["PATH"],
+        "env": {},
+        "protocol": {
+            "preferred": "2026-07-28",
+            "legacy": ["2025-11-25"],
+        },
+        # Manual restart is deliberately exercised under `never`: an
+        # operator action must not silently inherit the automatic policy.
+        "restart": {
+            "mode": "never",
+            "max_restarts": 0,
+            "window_ms": 1000,
+            "backoff_ms": 0,
+            "max_backoff_ms": 0,
+        },
+        "startup_timeout_ms": 5000,
+        "shutdown_grace_ms": 2000,
+    }
+
+    def mutate(document: dict) -> None:
+        document["mcp_servers"] = [server]
+
+    return mutate
+
+
+def wait_for_mcp(
+    client: ControlClient,
+    predicate,
+    *,
+    timeout: float = 15.0,
+) -> dict:
+    """Poll the nonblocking MCP supervisor view until a condition is true."""
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        last = client.call("mcp.get", {"server_id": "stdio-mock"})
+        if predicate(last):
+            return last
+        time.sleep(0.02)
+    raise AssertionError(f"MCP state did not converge: last={last!r}")
 
 
 def daemon_path() -> Path:
@@ -362,8 +416,226 @@ class ControlProtocolTests(unittest.TestCase):
         report.
         """
         with DaemonUnderTest() as daemon, daemon.connect() as client:
-            payload = client.call_expect_error("mcp.inventory")
+            payload = client.call_expect_error("requests.list")
             self.assertEqual("unsupported_in_this_build", payload["error"]["code"])
+
+    # --- M8 MCP control/readiness surface ---
+
+    def test_mcp_live_list_get_inventory_and_exact_identifier(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "control.json"
+            with DaemonUnderTest(
+                mutate=mcp_control_configuration(report)
+            ) as daemon, daemon.connect() as client:
+                live = wait_for_mcp(
+                    client,
+                    lambda value: value["state"] == "ready"
+                    and value["tool_count"] == 1,
+                )
+                self.assertEqual("stdio-mock", live["id"])
+                self.assertEqual("modern_2026", live["era"])
+                self.assertGreater(live["pid"], 0)
+                self.assertGreaterEqual(live["starts"], 1)
+                self.assertGreaterEqual(live["frames_in"], 4)
+                self.assertGreaterEqual(live["frames_out"], 4)
+
+                listed = client.call("mcp.list")
+                self.assertEqual(1, len(listed))
+                self.assertEqual(live["pid"], listed[0]["pid"])
+                self.assertEqual("ready", listed[0]["state"])
+                self.assertEqual(1, listed[0]["tool_count"])
+
+                inventory = client.call(
+                    "mcp.inventory", {"server_id": "stdio-mock"}
+                )
+                self.assertEqual("modern_2026", inventory["era"])
+                self.assertEqual(["echo"], [tool["name"] for tool in inventory["tools"]])
+                self.assertEqual([], inventory["resources"])
+                self.assertEqual([], inventory["prompts"])
+                self.assertEqual(1, inventory["tool_count"])
+
+                # Jansson rejects escaped NUL unless JSON_ALLOW_NUL is enabled,
+                # so the shared parser refuses this before method dispatch and
+                # cannot echo an id. The assembly handler still compares the
+                # explicit JSON length, keeping lookup safe if parser flags
+                # become more permissive later.
+                client.send_raw(
+                    json.dumps(
+                        {
+                            "id": "mcp-id-with-nul",
+                            "method": "mcp.get",
+                            "params": {
+                                "server_id": "stdio-mock\x00suffix"
+                            },
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+                embedded_nul = client.read_frame()
+                self.assertFalse(embedded_nul["ok"])
+                self.assertEqual("invalid_json", embedded_nul["error"]["code"])
+                missing = client.call_expect_error("mcp.inventory")
+                self.assertEqual("invalid_params", missing["error"]["code"])
+
+    def test_mcp_tool_test_requires_confirmation_and_reuses_result_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "tool-test.json"
+            with DaemonUnderTest(
+                mutate=mcp_control_configuration(report)
+            ) as daemon, daemon.connect() as client:
+                wait_for_mcp(
+                    client,
+                    lambda value: value["state"] == "ready"
+                    and value["tool_count"] == 1,
+                )
+                base = {
+                    "server_id": "stdio-mock",
+                    "tool": "echo",
+                    "arguments": {"text": "guarded"},
+                }
+                for params in (base, {**base, "confirmed": False}):
+                    rejected = client.call_expect_error("mcp.tool_test", params)
+                    self.assertEqual(
+                        "confirmation_required", rejected["error"]["code"]
+                    )
+
+                client.send_raw(
+                    json.dumps(
+                        {
+                            "id": "mcp-tool-with-nul",
+                            "method": "mcp.tool_test",
+                            "params": {
+                                **base,
+                                "confirmed": True,
+                                "tool": "echo\x00suffix",
+                            },
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+                bad_tool = client.read_frame()
+                self.assertFalse(bad_tool["ok"])
+                self.assertEqual("invalid_json", bad_tool["error"]["code"])
+                unknown = client.call_expect_error(
+                    "mcp.tool_test",
+                    {**base, "confirmed": True, "tool": "absent"},
+                )
+                self.assertEqual("not_found", unknown["error"]["code"])
+
+                # Two control frames handled in one callback cannot both
+                # consume the child's bounded call table. The second observes
+                # the first PENDING test before child stdout is serviced.
+                pending_params = {**base, "confirmed": True}
+                client.send_raw(
+                    json.dumps(
+                        {
+                            "id": "tool-pending-1",
+                            "method": "mcp.tool_test",
+                            "params": pending_params,
+                        }
+                    ).encode()
+                    + b"\n"
+                    + json.dumps(
+                        {
+                            "id": "tool-pending-2",
+                            "method": "mcp.tool_test",
+                            "params": pending_params,
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+                first_pending = client.read_frame()
+                duplicate = client.read_frame()
+                self.assertTrue(first_pending["ok"])
+                self.assertFalse(duplicate["ok"])
+                self.assertEqual(
+                    "invalid_state", duplicate["error"]["code"]
+                )
+                first_request_id = first_pending["result"]["request_id"]
+                wait_for_mcp(
+                    client,
+                    lambda value: value.get("tool_test", {}).get("request_id")
+                    == first_request_id
+                    and value["tool_test"]["state"] == "done",
+                )
+
+                # More calls than the fixed call table prove DONE results are
+                # replaced instead of permanently consuming one slot each.
+                for index in range(10):
+                    text = f"result-{index}"
+                    queued = client.call(
+                        "mcp.tool_test",
+                        {
+                            **base,
+                            "confirmed": True,
+                            "arguments": {"text": text},
+                        },
+                    )
+                    self.assertTrue(queued["queued"])
+                    request_id = queued["request_id"]
+                    done = wait_for_mcp(
+                        client,
+                        lambda value: value.get("tool_test", {}).get(
+                            "request_id"
+                        )
+                        == request_id
+                        and value["tool_test"]["state"] == "done",
+                    )["tool_test"]
+                    self.assertEqual(0, done["status"])
+                    self.assertEqual(
+                        text, done["result"]["content"][0]["text"]
+                    )
+
+    def test_mcp_manual_restart_stop_and_start_ignore_auto_restart_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "lifecycle-control.json"
+            with DaemonUnderTest(
+                mutate=mcp_control_configuration(report)
+            ) as daemon, daemon.connect() as client:
+                initial = wait_for_mcp(
+                    client,
+                    lambda value: value["state"] == "ready"
+                    and value["tool_count"] == 1,
+                )
+                old_pid = initial["pid"]
+
+                discovered = client.call(
+                    "mcp.discover", {"server_id": "stdio-mock"}
+                )
+                self.assertTrue(discovered["queued"])
+
+                restarting = client.call(
+                    "mcp.restart", {"server_id": "stdio-mock"}
+                )
+                self.assertEqual("restarting", restarting["state"])
+                restarted = wait_for_mcp(
+                    client,
+                    lambda value: value["state"] == "ready"
+                    and value["tool_count"] == 1
+                    and value["pid"] != old_pid,
+                )
+                self.assertGreater(restarted["starts"], initial["starts"])
+
+                stopped = client.call(
+                    "mcp.stop", {"server_id": "stdio-mock"}
+                )
+                self.assertEqual("stopped", stopped["state"])
+                wait_for_mcp(
+                    client,
+                    lambda value: value["state"] == "stopped"
+                    and value["pid"] == 0,
+                )
+
+                starting = client.call(
+                    "mcp.start", {"server_id": "stdio-mock"}
+                )
+                self.assertGreater(starting["pid"], 0)
+                started = wait_for_mcp(
+                    client,
+                    lambda value: value["state"] == "ready"
+                    and value["tool_count"] == 1,
+                )
+                self.assertGreater(started["starts"], restarted["starts"])
 
     # --- HARNESS.md M4 DoD 7 ---
 

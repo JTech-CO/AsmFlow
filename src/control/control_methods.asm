@@ -26,6 +26,7 @@
 %include "db.inc"
 %include "runtime.inc"
 %include "routing.inc"
+%include "mcp.inc"
 
         extern af_cstr_len
         extern af_mem_eq
@@ -47,6 +48,29 @@
         extern af_jw_member_uint
         extern af_jw_member_int
         extern af_jw_member_bool
+        extern af_jw_raw
+        extern af_jw_init
+        extern af_jw_finish
+
+        extern af_buf_init
+        extern af_buf_free
+        extern af_buf_data
+        extern af_buf_len
+        extern af_buf_append
+
+        extern af_json_member
+        extern af_json_type
+        extern af_json_get_bool
+        extern af_json_get_object
+        extern af_json_get_array
+        extern af_json_array_at
+        extern af_json_array_count
+        extern af_json_string_of
+        extern af_json_parse
+        extern af_json_doc_root
+        extern af_json_doc_free
+        extern af_jsonc_dump
+        extern af_jsonc_dump_free
 
         extern af_routing_provider
         extern af_health_refresh
@@ -80,6 +104,17 @@
         extern af_db_is_open
 
         extern af_cfg_getenv
+
+        extern af_mcp_child_for
+        extern af_mcp_state_name
+        extern af_mcp_required_ready
+        extern af_mcp_manual_start
+        extern af_mcp_manual_restart
+        extern af_mcp_stop
+        extern af_mcp_reset
+        extern af_mcp_refresh_inventory
+        extern af_mcp_request
+        extern af_mcp_call_release
 
         section .rodata
 
@@ -167,6 +202,58 @@ k_config_path:    db "config_path", 0
 k_reload_count:   db "reload_count", 0
 k_data:           db "data", 0
 k_state:          db "state", 0
+k_status:         db "status", 0
+k_era:            db "era", 0
+k_pid:            db "pid", 0
+k_starts:         db "starts", 0
+k_exits:          db "exits", 0
+k_restarts:       db "restarts", 0
+k_last_exit:      db "last_exit", 0
+k_last_signal:    db "last_signal", 0
+k_frames_in:      db "frames_in", 0
+k_frames_out:     db "frames_out", 0
+k_contaminated:   db "contaminated", 0
+k_oversized:      db "oversized", 0
+k_stderr_bytes:   db "stderr_bytes", 0
+k_stderr_truncated: db "stderr_truncated", 0
+k_notifications:  db "notifications", 0
+k_unmatched:      db "unmatched", 0
+k_server_id:      db "server_id", 0
+k_tools:          db "tools", 0
+k_resources:      db "resources", 0
+k_prompts:        db "prompts", 0
+k_tool_count:     db "tool_count", 0
+k_resource_count: db "resource_count", 0
+k_prompt_count:   db "prompt_count", 0
+k_fetched_ns:     db "fetched_at_monotonic_ns", 0
+k_expires_ns:     db "expires_at_monotonic_ns", 0
+k_cache_scope:    db "cache_scope", 0
+k_queued:         db "queued", 0
+k_request_id:     db "request_id", 0
+k_confirmed:      db "confirmed", 0
+k_tool:           db "tool", 0
+k_arguments:      db "arguments", 0
+k_result:         db "result", 0
+k_error_code:     db "error_code", 0
+k_tool_test:      db "tool_test", 0
+k_name:           db "name", 0
+k_meta:           db "_meta", 0
+
+v_unknown:        db "unknown", 0
+v_modern_2026:    db "modern_2026", 0
+v_legacy_2025:    db "legacy_2025", 0
+v_pending:        db "pending", 0
+v_done:           db "done", 0
+v_failed:         db "failed", 0
+v_public:         db "public", 0
+v_private:        db "private", 0
+
+m_tools_call:     db "tools/call", 0
+p_modern_meta:
+        db '{"io.modelcontextprotocol/protocolVersion":"2026-07-28",'
+        db '"io.modelcontextprotocol/clientInfo":{"name":"AsmFlow","version":"'
+        db AF_VERSION_STRING
+        db '"},"io.modelcontextprotocol/clientCapabilities":{}}', 0
 
 v_responses:        db "responses", 0
 v_chat_completions: db "chat_completions", 0
@@ -211,18 +298,18 @@ af_ctl_methods:
         dq n_provider_disable, af_ctl_m_provider_disable
         dq n_requests_list,   0
         dq n_requests_get,    0
-        dq n_mcp_get,         0
-        dq n_mcp_inventory,   0
+        dq n_mcp_get,         af_ctl_m_mcp_get
+        dq n_mcp_inventory,   af_ctl_m_mcp_inventory
         dq n_logs_tail,       0
         dq n_config_validate, 0
         dq n_config_reload,   0
         dq n_provider_probe,  0
-        dq n_mcp_start,       0
-        dq n_mcp_stop,        0
-        dq n_mcp_restart,     0
-        dq n_mcp_reset_loop,  0
-        dq n_mcp_discover,    0
-        dq n_mcp_tool_test,   0
+        dq n_mcp_start,       af_ctl_m_mcp_start
+        dq n_mcp_stop,        af_ctl_m_mcp_stop
+        dq n_mcp_restart,     af_ctl_m_mcp_restart
+        dq n_mcp_reset_loop,  af_ctl_m_mcp_reset_loop
+        dq n_mcp_discover,    af_ctl_m_mcp_discover
+        dq n_mcp_tool_test,   af_ctl_m_mcp_tool_test
         dq n_diagnostics,     0
         dq 0, 0
 
@@ -316,6 +403,16 @@ af_ctl_method_invoke:
         mov     rdx, [r14 + 8]
         mov     rcx, AF_CTLERR_NOT_FOUND
         cmp     qword [rsp + 104], AF_E_NOTFOUND
+        je      .emit
+        mov     rcx, AF_CTLERR_UNCONFIRMED
+        cmp     qword [rsp + 104], AF_E_MCP_UNCONFIRMED
+        je      .emit
+        mov     rcx, AF_CTLERR_STATE
+        cmp     qword [rsp + 104], AF_E_MCP_NOT_READY
+        je      .emit
+        cmp     qword [rsp + 104], AF_E_MCP_CRASH_LOOP
+        je      .emit
+        cmp     qword [rsp + 104], AF_E_CLOSED
         je      .emit
         mov     rcx, AF_CTLERR_INVALID_PARAMS
         cmp     qword [rsp + 104], AF_E_CTL_PARAMS
@@ -446,9 +543,28 @@ af_ctl_m_system_snapshot:
         test    r13, r13
         jz      .no_runtime
 
+        ; The snapshot and /readyz use the same dependency predicate.  RT_READY
+        ; says startup completed; required MCP children still have to finish a
+        ; successful tools inventory, and shutdown/database state remain hard
+        ; readiness barriers.
+        xor     rax, rax
+        cmp     qword [r13 + RT_READY], 0
+        je      .ready_known
+        cmp     qword [r13 + RT_SHUTTING_DOWN], 0
+        jne     .ready_known
+        mov     rdi, [r13 + RT_DB]
+        test    rdi, rdi
+        jz      .ready_known
+        call    af_db_is_open
+        test    rax, rax
+        jz      .ready_known
+        mov     rdi, [r13 + RT_MCP]
+        call    af_mcp_required_ready
+.ready_known:
+        mov     [rsp + 32], rax
         mov     rdi, r12
         lea     rsi, [k_ready]
-        mov     rdx, [r13 + RT_READY]
+        mov     rdx, [rsp + 32]
         call    af_jw_member_bool
 
         mov     rdi, r12
@@ -1098,14 +1214,15 @@ af_ctl_m_routes_get:
         AF_LEAVE_ERR AF_E_CTL_PARAMS
 
 ; ---------------------------------------------------------------------------
-; mcp.list
+; mcp.list / mcp.get / mcp.inventory
 ;
-; Configuration and enablement only. Live state, era, and inventory arrive with
-; the supervisor in M8 and M9.
+; Configuration and live state are joined by the stable configured identifier.
+; Both stdio and Streamable HTTP servers have transport-neutral supervisor
+; children; the transport-specific adapter remains private to that child.
 ; ---------------------------------------------------------------------------
         global af_ctl_m_mcp_list
 af_ctl_m_mcp_list:
-        AF_ENTER 32
+        AF_ENTER 48
         mov     rbx, rdi
         mov     r12, rsi
         mov     rdi, rbx
@@ -1118,6 +1235,8 @@ af_ctl_m_mcp_list:
         mov     r14, [r13 + RT_CONFIG]
         test    r14, r14
         jz      .close
+        mov     rax, [r13 + RT_MCP]
+        mov     [rsp], rax
         xor     r15, r15
 .loop:
         cmp     r15, [r14 + CFG_MCP_COUNT]
@@ -1125,44 +1244,945 @@ af_ctl_m_mcp_list:
         mov     rax, r15
         imul    rax, rax, MCP_SIZE
         add     rax, [r14 + CFG_MCP_SERVERS]
-        mov     [rsp], rax
+        mov     [rsp + 8], rax
+        xor     r13d, r13d
+        mov     rdi, [rsp]
+        test    rdi, rdi
+        jz      .write
+        mov     rsi, [rax + MCP_ID]
+        call    af_mcp_child_for
+        mov     r13, rax
+.write:
         mov     rdi, r12
-        call    af_jw_begin_object
-        mov     rcx, [rsp]
-        mov     rdi, r12
-        lea     rsi, [k_id]
-        mov     rdx, [rcx + MCP_ID]
-        call    af_jw_member_string
-        mov     rcx, [rsp]
-        mov     rdi, r12
-        lea     rsi, [k_display_name]
-        mov     rdx, [rcx + MCP_DISPLAY_NAME]
-        call    af_jw_member_string
-        mov     rcx, [rsp]
-        mov     rdi, [rcx + MCP_TRANSPORT]
-        call    af_repo_transport_name
-        mov     rdx, rax
-        mov     rdi, r12
-        lea     rsi, [k_transport]
-        call    af_jw_member_string
-        mov     rcx, [rsp]
-        mov     rdi, r12
-        lea     rsi, [k_enabled]
-        mov     rdx, [rcx + MCP_ENABLED]
-        call    af_jw_member_bool
-        mov     rcx, [rsp]
-        mov     rdi, r12
-        lea     rsi, [k_required]
-        mov     rdx, [rcx + MCP_REQUIRED]
-        call    af_jw_member_bool
-        mov     rdi, r12
-        call    af_jw_end_object
+        mov     rsi, [rsp + 8]
+        mov     rdx, r13
+        xor     ecx, ecx
+        call    af_ctl_write_mcp
         inc     r15
         jmp     .loop
 .close:
         mov     rdi, r12
         call    af_jw_end_array
         AF_LEAVE_OK
+
+; af_ctl_find_mcp(af_runtime *rt, json_t *params, af_cfg_mcp **out_cfg,
+;                 af_mcp_child **out_child) -> af_status
+;
+; The JSON length is authoritative.  Requiring the borrowed Jansson string's
+; C length to match rejects an embedded NUL before any C-string lookup can turn
+; `real\u0000suffix` into `real`.
+af_ctl_find_mcp:
+        AF_ENTER 64
+        test    rdi, rdi
+        jz      .not_found
+        test    rsi, rsi
+        jz      .bad_params
+        test    rdx, rdx
+        jz      .bad_params
+        test    rcx, rcx
+        jz      .bad_params
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        mov     r14, rcx
+        mov     qword [r13], 0
+        mov     qword [r14], 0
+
+        mov     rdi, r12
+        lea     rsi, [k_server_id]
+        lea     rdx, [rsp]
+        lea     rcx, [rsp + 8]
+        call    af_json_get_string
+        test    rax, rax
+        js      .bad_params
+        cmp     qword [rsp + 8], 0
+        je      .bad_params
+        mov     rdi, [rsp]
+        call    af_cstr_len
+        cmp     rax, [rsp + 8]
+        jne     .bad_params
+
+        mov     r15, [rbx + RT_CONFIG]
+        test    r15, r15
+        jz      .not_found
+        mov     qword [rsp + 16], 0
+.scan:
+        mov     rax, [rsp + 16]
+        cmp     rax, [r15 + CFG_MCP_COUNT]
+        jae     .not_found
+        imul    rax, rax, MCP_SIZE
+        add     rax, [r15 + CFG_MCP_SERVERS]
+        mov     [rsp + 24], rax
+        mov     rdi, [rax + MCP_ID]
+        call    af_cstr_len
+        cmp     rax, [rsp + 8]
+        jne     .next
+        mov     rax, [rsp + 24]
+        mov     rdi, [rax + MCP_ID]
+        mov     rsi, [rsp]
+        mov     rdx, [rsp + 8]
+        call    af_mem_eq
+        test    rax, rax
+        jnz     .found
+.next:
+        inc     qword [rsp + 16]
+        jmp     .scan
+.found:
+        mov     rax, [rsp + 24]
+        mov     [r13], rax
+        mov     rdi, [rbx + RT_MCP]
+        test    rdi, rdi
+        jz      .not_found
+        mov     rsi, [rsp]
+        call    af_mcp_child_for
+        test    rax, rax
+        jz      .not_found
+        mov     [r14], rax
+        AF_LEAVE_OK
+.bad_params:
+        AF_LEAVE_ERR AF_E_CTL_PARAMS
+.not_found:
+        AF_LEAVE_ERR AF_E_NOTFOUND
+
+; af_ctl_mcp_era_name(i64 era) -> const char * (STATIC)
+af_ctl_mcp_era_name:
+        cmp     rdi, AF_ERA_MODERN
+        je      .modern
+        cmp     rdi, AF_ERA_LEGACY
+        je      .legacy
+        lea     rax, [v_unknown]
+        ret
+.modern:
+        lea     rax, [v_modern_2026]
+        ret
+.legacy:
+        lea     rax, [v_legacy_2025]
+        ret
+
+; af_ctl_mcp_cache_scope_name(i64 scope) -> const char * (STATIC)
+af_ctl_mcp_cache_scope_name:
+        cmp     rdi, AF_MCP_CACHE_PUBLIC
+        je      .public
+        cmp     rdi, AF_MCP_CACHE_PRIVATE
+        je      .private
+        lea     rax, [v_none]
+        ret
+.public:
+        lea     rax, [v_public]
+        ret
+.private:
+        lea     rax, [v_private]
+        ret
+
+; af_ctl_find_tool_call(af_mcp_child *child) -> af_mcp_call * (BORROWED)
+af_ctl_find_tool_call:
+        test    rdi, rdi
+        jz      .none
+        xor     ecx, ecx
+.scan:
+        cmp     rcx, AF_MCP_MAX_CALLS
+        jae     .none
+        mov     rax, rcx
+        imul    rax, rax, CL_SIZE
+        add     rax, rdi
+        add     rax, MC_CALLS
+        cmp     qword [rax + CL_STATE], AF_MCP_CALL_FREE
+        je      .next
+        cmp     qword [rax + CL_KIND], AF_MCP_CALL_TOOL_TEST
+        je      .done
+.next:
+        inc     rcx
+        jmp     .scan
+.none:
+        xor     eax, eax
+.done:
+        ret
+
+; af_ctl_write_tool_call(af_json_writer *w, af_mcp_call *call) -> af_status
+af_ctl_write_tool_call:
+        AF_ENTER 32
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     rdi, rbx
+        call    af_jw_begin_object
+        mov     rdi, rbx
+        lea     rsi, [k_request_id]
+        mov     rdx, [r12 + CL_ID]
+        call    af_jw_member_uint
+        mov     rdi, rbx
+        lea     rsi, [k_state]
+        cmp     qword [r12 + CL_STATE], AF_MCP_CALL_DONE
+        je      .done_name
+        lea     rdx, [v_pending]
+        jmp     .state_name
+.done_name:
+        lea     rdx, [v_done]
+.state_name:
+        call    af_jw_member_string
+        mov     rdi, rbx
+        lea     rsi, [k_status]
+        mov     rdx, [r12 + CL_STATUS]
+        call    af_jw_member_int
+        mov     rdi, rbx
+        lea     rsi, [k_error_code]
+        mov     rdx, [r12 + CL_ERROR_CODE]
+        call    af_jw_member_int
+        mov     rdi, rbx
+        lea     rsi, [k_result]
+        call    af_jw_key
+        cmp     qword [r12 + CL_STATE], AF_MCP_CALL_DONE
+        jne     .null
+        lea     rdi, [r12 + CL_RESULT]
+        call    af_buf_len
+        mov     r13, rax
+        test    r13, r13
+        jz      .null
+        lea     rdi, [r12 + CL_RESULT]
+        call    af_buf_data
+        test    rax, rax
+        jz      .null
+        mov     rdi, rbx
+        mov     rsi, rax
+        mov     rdx, r13
+        call    af_jw_raw
+        jmp     .close
+.null:
+        mov     rdi, rbx
+        call    af_jw_null
+.close:
+        mov     rdi, rbx
+        call    af_jw_end_object
+        AF_LEAVE_OK
+
+; af_ctl_write_mcp(af_json_writer *w, af_cfg_mcp *cfg, af_mcp_child *child,
+;                  i64 include_tool_test) -> af_status
+af_ctl_write_mcp:
+        AF_ENTER 64
+        mov     rbx, rdi
+        mov     r13, rsi
+        mov     r14, rdx
+        mov     r15, rcx
+        mov     rdi, rbx
+        call    af_jw_begin_object
+        mov     rdi, rbx
+        lea     rsi, [k_id]
+        mov     rdx, [r13 + MCP_ID]
+        call    af_jw_member_string
+        mov     rdi, rbx
+        lea     rsi, [k_display_name]
+        mov     rdx, [r13 + MCP_DISPLAY_NAME]
+        call    af_jw_member_string
+        mov     rdi, [r13 + MCP_TRANSPORT]
+        call    af_repo_transport_name
+        mov     rdx, rax
+        mov     rdi, rbx
+        lea     rsi, [k_transport]
+        call    af_jw_member_string
+        mov     rdi, rbx
+        lea     rsi, [k_enabled]
+        mov     rdx, [r13 + MCP_ENABLED]
+        call    af_jw_member_bool
+        mov     rdi, rbx
+        lea     rsi, [k_required]
+        mov     rdx, [r13 + MCP_REQUIRED]
+        call    af_jw_member_bool
+
+        mov     rdi, rbx
+        lea     rsi, [k_state]
+        test    r14, r14
+        jz      .configured_state
+        mov     rdi, [r14 + MC_STATE]
+        call    af_mcp_state_name
+        mov     rdx, rax
+        jmp     .emit_state
+.configured_state:
+        cmp     qword [r13 + MCP_ENABLED], 0
+        jne     .configured_failed
+        mov     rdi, AF_MCP_S_DISABLED
+        call    af_mcp_state_name
+        mov     rdx, rax
+        jmp     .emit_state
+.configured_failed:
+        lea     rdx, [v_failed]
+.emit_state:
+        mov     rdi, rbx
+        lea     rsi, [k_state]
+        call    af_jw_member_string
+
+        xor     edi, edi
+        test    r14, r14
+        jz      .era_name
+        mov     rdi, [r14 + MC_ERA]
+.era_name:
+        call    af_ctl_mcp_era_name
+        mov     rdx, rax
+        mov     rdi, rbx
+        lea     rsi, [k_era]
+        call    af_jw_member_string
+
+        ; Negotiated version is owned by this process view and is NULL until
+        ; era validation commits. Emit null after stop/failure/restart rather
+        ; than inferring a version from the era label or configuration.
+        mov     rdi, rbx
+        lea     rsi, [k_protocol_ver]
+        call    af_jw_key
+        test    r14, r14
+        jz      .protocol_version_null
+        mov     rdx, [r14 + MC_VERSION]
+        test    rdx, rdx
+        jz      .protocol_version_null
+        mov     rdi, rbx
+        mov     rsi, rdx
+        call    af_jw_string
+        jmp     .protocol_version_done
+.protocol_version_null:
+        mov     rdi, rbx
+        call    af_jw_null
+.protocol_version_done:
+
+%macro MCP_LIVE_UINT 2
+        xor     edx, edx
+        test    r14, r14
+        jz      %%emit
+        mov     rdx, [r14 + %2]
+%%emit:
+        mov     rdi, rbx
+        lea     rsi, [%1]
+        call    af_jw_member_uint
+%endmacro
+        MCP_LIVE_UINT k_pid, MC_PID
+        MCP_LIVE_UINT k_starts, MC_STARTS
+        MCP_LIVE_UINT k_exits, MC_EXITS
+        MCP_LIVE_UINT k_restarts, MC_RESTARTS
+        MCP_LIVE_UINT k_last_exit, MC_LAST_EXIT
+        MCP_LIVE_UINT k_last_signal, MC_LAST_SIGNAL
+        MCP_LIVE_UINT k_frames_in, MC_FRAMES_IN
+        MCP_LIVE_UINT k_frames_out, MC_FRAMES_OUT
+        MCP_LIVE_UINT k_contaminated, MC_CONTAMINATED
+        MCP_LIVE_UINT k_oversized, MC_OVERSIZED
+        MCP_LIVE_UINT k_stderr_bytes, MC_STDERR_BYTES
+        MCP_LIVE_UINT k_stderr_truncated, MC_STDERR_TRUNC
+        MCP_LIVE_UINT k_notifications, MC_NOTIFICATIONS
+        MCP_LIVE_UINT k_unmatched, MC_UNMATCHED
+        MCP_LIVE_UINT k_tool_count, MC_TOOL_COUNT
+        MCP_LIVE_UINT k_resource_count, MC_RES_COUNT
+        MCP_LIVE_UINT k_prompt_count, MC_PROMPT_COUNT
+        MCP_LIVE_UINT k_fetched_ns, MC_FETCHED_NS
+        MCP_LIVE_UINT k_expires_ns, MC_EXPIRES_NS
+%unmacro MCP_LIVE_UINT 2
+
+        xor     edi, edi
+        test    r14, r14
+        jz      .scope_name_ready
+        mov     rdi, [r14 + MC_CACHE_SCOPE]
+.scope_name_ready:
+        call    af_ctl_mcp_cache_scope_name
+        mov     rdx, rax
+        mov     rdi, rbx
+        lea     rsi, [k_cache_scope]
+        call    af_jw_member_string
+
+        test    r15, r15
+        jz      .close
+        test    r14, r14
+        jz      .close
+        mov     rdi, r14
+        call    af_ctl_find_tool_call
+        test    rax, rax
+        jz      .close
+        mov     [rsp], rax
+        mov     rdi, rbx
+        lea     rsi, [k_tool_test]
+        call    af_jw_key
+        mov     rdi, rbx
+        mov     rsi, [rsp]
+        call    af_ctl_write_tool_call
+.close:
+        mov     rdi, rbx
+        call    af_jw_end_object
+        AF_LEAVE_OK
+
+        global af_ctl_m_mcp_get
+af_ctl_m_mcp_get:
+        AF_ENTER 32
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        test    rax, rax
+        jz      .not_found
+        mov     rdi, rax
+        mov     rsi, r13
+        lea     rdx, [rsp]
+        lea     rcx, [rsp + 8]
+        call    af_ctl_find_mcp
+        test    rax, rax
+        js      .done
+        mov     rdi, r12
+        mov     rsi, [rsp]
+        mov     rdx, [rsp + 8]
+        mov     rcx, 1
+        call    af_ctl_write_mcp
+        AF_LEAVE_OK
+.not_found:
+        AF_LEAVE_ERR AF_E_NOTFOUND
+.done:
+        AF_LEAVE
+
+; af_ctl_write_inventory_value(writer, key, af_buffer *value) -> void
+af_ctl_write_inventory_value:
+        AF_ENTER 32
+        mov     rbx, rdi
+        mov     r12, rdx
+        mov     rdi, rbx
+        call    af_jw_key
+        mov     rdi, r12
+        call    af_buf_len
+        mov     r13, rax
+        test    r13, r13
+        jz      .null
+        mov     rdi, r12
+        call    af_buf_data
+        test    rax, rax
+        jz      .null
+        mov     rdi, rbx
+        mov     rsi, rax
+        mov     rdx, r13
+        call    af_jw_raw
+        AF_LEAVE
+.null:
+        mov     rdi, rbx
+        call    af_jw_null
+        AF_LEAVE
+
+        global af_ctl_m_mcp_inventory
+af_ctl_m_mcp_inventory:
+        AF_ENTER 32
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        test    rax, rax
+        jz      .not_found
+        mov     rdi, rax
+        mov     rsi, r13
+        lea     rdx, [rsp]
+        lea     rcx, [rsp + 8]
+        call    af_ctl_find_mcp
+        test    rax, rax
+        js      .done
+        mov     r14, [rsp + 8]
+        test    r14, r14
+        jz      .not_ready
+        mov     rdi, r12
+        call    af_jw_begin_object
+        mov     rdi, r12
+        lea     rsi, [k_server_id]
+        mov     rdx, [r14 + MC_ID]
+        call    af_jw_member_string
+        mov     rdi, [r14 + MC_ERA]
+        call    af_ctl_mcp_era_name
+        mov     rdx, rax
+        mov     rdi, r12
+        lea     rsi, [k_era]
+        call    af_jw_member_string
+        mov     rdi, r12
+        lea     rsi, [k_tools]
+        lea     rdx, [r14 + MC_TOOLS]
+        call    af_ctl_write_inventory_value
+        mov     rdi, r12
+        lea     rsi, [k_resources]
+        lea     rdx, [r14 + MC_RESOURCES]
+        call    af_ctl_write_inventory_value
+        mov     rdi, r12
+        lea     rsi, [k_prompts]
+        lea     rdx, [r14 + MC_PROMPTS]
+        call    af_ctl_write_inventory_value
+        mov     rdi, r12
+        lea     rsi, [k_tool_count]
+        mov     rdx, [r14 + MC_TOOL_COUNT]
+        call    af_jw_member_uint
+        mov     rdi, r12
+        lea     rsi, [k_resource_count]
+        mov     rdx, [r14 + MC_RES_COUNT]
+        call    af_jw_member_uint
+        mov     rdi, r12
+        lea     rsi, [k_prompt_count]
+        mov     rdx, [r14 + MC_PROMPT_COUNT]
+        call    af_jw_member_uint
+        mov     rdi, r12
+        lea     rsi, [k_fetched_ns]
+        mov     rdx, [r14 + MC_FETCHED_NS]
+        call    af_jw_member_uint
+        mov     rdi, r12
+        lea     rsi, [k_expires_ns]
+        mov     rdx, [r14 + MC_EXPIRES_NS]
+        call    af_jw_member_uint
+        mov     rdi, [r14 + MC_CACHE_SCOPE]
+        call    af_ctl_mcp_cache_scope_name
+        mov     rdx, rax
+        mov     rdi, r12
+        lea     rsi, [k_cache_scope]
+        call    af_jw_member_string
+        mov     rdi, r12
+        call    af_jw_end_object
+        AF_LEAVE_OK
+.not_ready:
+        AF_LEAVE_ERR AF_E_MCP_NOT_READY
+.not_found:
+        AF_LEAVE_ERR AF_E_NOTFOUND
+.done:
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
+; MCP lifecycle and discovery mutations.
+; ---------------------------------------------------------------------------
+%define CTL_MCP_ACT_START    0
+%define CTL_MCP_ACT_STOP     1
+%define CTL_MCP_ACT_RESTART  2
+%define CTL_MCP_ACT_RESET    3
+%define CTL_MCP_ACT_DISCOVER 4
+
+        global af_ctl_m_mcp_start
+af_ctl_m_mcp_start:
+        AF_ENTER 0
+        mov     rcx, CTL_MCP_ACT_START
+        call    af_ctl_mcp_action
+        AF_LEAVE
+
+        global af_ctl_m_mcp_stop
+af_ctl_m_mcp_stop:
+        AF_ENTER 0
+        mov     rcx, CTL_MCP_ACT_STOP
+        call    af_ctl_mcp_action
+        AF_LEAVE
+
+        global af_ctl_m_mcp_restart
+af_ctl_m_mcp_restart:
+        AF_ENTER 0
+        mov     rcx, CTL_MCP_ACT_RESTART
+        call    af_ctl_mcp_action
+        AF_LEAVE
+
+        global af_ctl_m_mcp_reset_loop
+af_ctl_m_mcp_reset_loop:
+        AF_ENTER 0
+        mov     rcx, CTL_MCP_ACT_RESET
+        call    af_ctl_mcp_action
+        AF_LEAVE
+
+        global af_ctl_m_mcp_discover
+af_ctl_m_mcp_discover:
+        AF_ENTER 0
+        mov     rcx, CTL_MCP_ACT_DISCOVER
+        call    af_ctl_mcp_action
+        AF_LEAVE
+
+; af_ctl_mcp_action(conn, writer, params, action) -> af_status
+af_ctl_mcp_action:
+        AF_ENTER 64
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        mov     [rsp + 24], rcx
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        test    rax, rax
+        jz      .not_found
+        mov     r14, rax
+        mov     r15, [r14 + RT_MCP]
+        test    r15, r15
+        jz      .not_ready
+        mov     rdi, r14
+        mov     rsi, r13
+        lea     rdx, [rsp]
+        lea     rcx, [rsp + 8]
+        call    af_ctl_find_mcp
+        test    rax, rax
+        js      .done
+        mov     r13, [rsp + 8]
+        test    r13, r13
+        jz      .not_ready
+
+        mov     rax, [rsp + 24]
+        cmp     rax, CTL_MCP_ACT_START
+        je      .start
+        cmp     rax, CTL_MCP_ACT_STOP
+        je      .stop
+        cmp     rax, CTL_MCP_ACT_RESTART
+        je      .restart
+        cmp     rax, CTL_MCP_ACT_RESET
+        je      .reset
+        cmp     rax, CTL_MCP_ACT_DISCOVER
+        jne     .bad_params
+        mov     rdi, r13
+        call    af_mcp_refresh_inventory
+        jmp     .acted
+.start:
+        mov     rdi, r13
+        mov     rsi, r15
+        call    af_mcp_manual_start
+        jmp     .acted
+.stop:
+        mov     rdi, r13
+        mov     rsi, r15
+        mov     rdx, 1
+        call    af_mcp_stop
+        jmp     .acted
+.restart:
+        mov     rdi, r13
+        mov     rsi, r15
+        call    af_mcp_manual_restart
+        jmp     .acted
+.reset:
+        mov     rdi, r13
+        call    af_mcp_reset
+.acted:
+        test    rax, rax
+        js      .done
+        mov     rdi, rbx
+        call    af_ctl_conn_server
+        mov     rdi, rax
+        call    af_ctl_server_bump_revision_local
+
+        cmp     qword [rsp + 24], CTL_MCP_ACT_DISCOVER
+        je      .queued
+        mov     rdi, r12
+        mov     rsi, [rsp]
+        mov     rdx, r13
+        xor     ecx, ecx
+        call    af_ctl_write_mcp
+        AF_LEAVE_OK
+.queued:
+        mov     rdi, r12
+        call    af_jw_begin_object
+        mov     rdi, r12
+        lea     rsi, [k_server_id]
+        mov     rdx, [r13 + MC_ID]
+        call    af_jw_member_string
+        mov     rdi, r12
+        lea     rsi, [k_queued]
+        mov     rdx, 1
+        call    af_jw_member_bool
+        mov     rdi, r12
+        call    af_jw_end_object
+        AF_LEAVE_OK
+.bad_params:
+        AF_LEAVE_ERR AF_E_CTL_PARAMS
+.not_ready:
+        AF_LEAVE_ERR AF_E_MCP_NOT_READY
+.not_found:
+        AF_LEAVE_ERR AF_E_NOTFOUND
+.done:
+        AF_LEAVE
+
+; af_ctl_mcp_tool_known(child, name, name_len) -> i64
+;
+; Inventory is parsed as bounded JSON and names are compared by explicit byte
+; length.  A description containing the requested bytes is not a match, and a
+; server-reported name with an embedded NUL cannot truncate the comparison.
+af_ctl_mcp_tool_known:
+        AF_ENTER 160
+        test    rdi, rdi
+        jz      .false_direct
+        test    rsi, rsi
+        jz      .false_direct
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        lea     rdi, [rbx + MC_TOOLS]
+        call    af_buf_len
+        mov     [rsp], rax
+        test    rax, rax
+        jz      .false_direct
+        lea     rdi, [rbx + MC_TOOLS]
+        call    af_buf_data
+        mov     [rsp + 8], rax
+        test    rax, rax
+        jz      .false_direct
+
+        mov     rax, [rsp]
+        mov     [rsp + 64 + AF_JSONLIM_MAX_BYTES], rax
+        mov     qword [rsp + 64 + AF_JSONLIM_MAX_DEPTH], 64
+        mov     qword [rsp + 64 + AF_JSONLIM_MAX_STRING], AF_MCP_INVENTORY_MAX
+        mov     qword [rsp + 64 + AF_JSONLIM_MAX_ELEMS], 100000
+        mov     rdi, [rsp + 8]
+        mov     rsi, [rsp]
+        lea     rdx, [rsp + 64]
+        lea     rcx, [rsp + 96]
+        call    af_json_parse
+        test    rax, rax
+        js      .false_direct
+        xor     r14d, r14d
+
+        lea     rdi, [rsp + 96]
+        call    af_json_doc_root
+        mov     [rsp + 16], rax
+        mov     rdi, rax
+        call    af_json_type
+        cmp     rax, AF_JSON_ARRAY
+        jne     .free
+        mov     rdi, [rsp + 16]
+        call    af_json_array_count
+        mov     [rsp + 24], rax
+        xor     r15d, r15d
+.scan:
+        cmp     r15, [rsp + 24]
+        jae     .free
+        mov     rdi, [rsp + 16]
+        mov     rsi, r15
+        lea     rdx, [rsp + 32]
+        call    af_json_array_at
+        test    rax, rax
+        js      .next
+        mov     rdi, [rsp + 32]
+        lea     rsi, [k_name]
+        lea     rdx, [rsp + 40]
+        lea     rcx, [rsp + 48]
+        call    af_json_get_string
+        test    rax, rax
+        js      .next
+        cmp     qword [rsp + 48], r13
+        jne     .next
+        mov     rdi, [rsp + 40]
+        mov     rsi, r12
+        mov     rdx, r13
+        call    af_mem_eq
+        test    rax, rax
+        jz      .next
+        mov     r14, 1
+        jmp     .free
+.next:
+        inc     r15
+        jmp     .scan
+.free:
+        lea     rdi, [rsp + 96]
+        call    af_json_doc_free
+        mov     rax, r14
+        AF_LEAVE
+.false_direct:
+        xor     eax, eax
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
+; mcp.tool_test
+;
+; One operator test call per child is retained.  A second request while it is
+; pending is refused; after completion, the next confirmed test releases the
+; previous result before allocating its slot.  This gives mcp.get a clear
+; latest-result view without allowing DONE calls to exhaust the fixed table.
+; ---------------------------------------------------------------------------
+        global af_ctl_m_mcp_tool_test
+af_ctl_m_mcp_tool_test:
+        AF_ENTER 256
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        test    r13, r13
+        jz      .unconfirmed
+
+        mov     qword [rsp + 184], 0
+        mov     rdi, r13
+        lea     rsi, [k_confirmed]
+        lea     rdx, [rsp + 184]
+        call    af_json_get_bool
+        test    rax, rax
+        js      .unconfirmed
+        cmp     qword [rsp + 184], 1
+        jne     .unconfirmed
+
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        test    rax, rax
+        jz      .not_found
+        mov     r14, rax
+        mov     r15, [r14 + RT_MCP]
+        test    r15, r15
+        jz      .not_ready
+        mov     rdi, r14
+        mov     rsi, r13
+        lea     rdx, [rsp]
+        lea     rcx, [rsp + 8]
+        call    af_ctl_find_mcp
+        test    rax, rax
+        js      .done
+        mov     rax, [rsp + 8]
+        test    rax, rax
+        jz      .not_ready
+        cmp     qword [rax + MC_STATE], AF_MCP_S_READY
+        jne     .not_ready
+        test    qword [rax + MC_FLAGS], AF_MC_F_STOPPING
+        jnz     .not_ready
+        test    qword [rax + MC_FLAGS], AF_MC_F_TOOLS_CURRENT
+        jz      .not_ready
+
+        mov     rdi, r13
+        lea     rsi, [k_tool]
+        lea     rdx, [rsp + 16]
+        lea     rcx, [rsp + 24]
+        call    af_json_get_string
+        test    rax, rax
+        js      .bad_params
+        cmp     qword [rsp + 24], 0
+        je      .bad_params
+        mov     rdi, [rsp + 16]
+        call    af_cstr_len
+        cmp     rax, [rsp + 24]
+        jne     .bad_params
+        mov     rdi, r13
+        lea     rsi, [k_arguments]
+        lea     rdx, [rsp + 32]
+        call    af_json_get_object
+        test    rax, rax
+        js      .bad_params
+
+        mov     rdi, [rsp + 8]
+        mov     rsi, [rsp + 16]
+        mov     rdx, [rsp + 24]
+        call    af_ctl_mcp_tool_known
+        test    rax, rax
+        jz      .not_found
+
+        mov     rdi, [rsp + 8]
+        call    af_ctl_find_tool_call
+        test    rax, rax
+        jz      .no_previous
+        cmp     qword [rax + CL_STATE], AF_MCP_CALL_PENDING
+        je      .not_ready
+        mov     rdi, rax
+        call    af_mcp_call_release
+.no_previous:
+
+        mov     rdi, [rsp + 32]
+        lea     rsi, [rsp + 168]
+        call    af_jsonc_dump
+        test    rax, rax
+        jz      .internal
+        mov     [rsp + 160], rax
+
+        lea     rdi, [rsp + 64]
+        mov     rsi, AF_MCP_INVENTORY_MAX
+        call    af_buf_init
+        test    rax, rax
+        js      .free_dump_internal
+        lea     rdi, [rsp + 96]
+        lea     rsi, [rsp + 64]
+        call    af_jw_init
+        lea     rdi, [rsp + 96]
+        call    af_jw_begin_object
+        lea     rdi, [rsp + 96]
+        lea     rsi, [k_name]
+        call    af_jw_key
+        lea     rdi, [rsp + 96]
+        mov     rsi, [rsp + 16]
+        mov     rdx, [rsp + 24]
+        call    af_jw_string_n
+        lea     rdi, [rsp + 96]
+        lea     rsi, [k_arguments]
+        call    af_jw_key
+        lea     rdi, [rsp + 96]
+        mov     rsi, [rsp + 160]
+        mov     rdx, [rsp + 168]
+        call    af_jw_raw
+
+        mov     rax, [rsp + 8]
+        cmp     qword [rax + MC_ERA], AF_ERA_MODERN
+        jne     .finish_params
+        lea     rdi, [rsp + 96]
+        lea     rsi, [k_meta]
+        call    af_jw_key
+        lea     rdi, [p_modern_meta]
+        call    af_cstr_len
+        mov     rdx, rax
+        lea     rdi, [rsp + 96]
+        lea     rsi, [p_modern_meta]
+        call    af_jw_raw
+.finish_params:
+        lea     rdi, [rsp + 96]
+        call    af_jw_end_object
+        lea     rdi, [rsp + 96]
+        call    af_jw_finish
+        test    rax, rax
+        js      .free_both_internal
+        mov     byte [rsp + 176], 0
+        lea     rdi, [rsp + 64]
+        lea     rsi, [rsp + 176]
+        mov     rdx, 1
+        call    af_buf_append
+        test    rax, rax
+        js      .free_both_internal
+
+        mov     qword [rsp + 56], 10000
+        mov     rax, [rsp + 8]
+        mov     rax, [rax + MC_CFG]
+        test    rax, rax
+        jz      .have_timeout
+        mov     rcx, [rax + MCP_TIMEOUTS + TMO_REQUEST_MS]
+        test    rcx, rcx
+        jz      .have_timeout
+        mov     [rsp + 56], rcx
+.have_timeout:
+        lea     rdi, [rsp + 64]
+        call    af_buf_data
+        mov     rdx, rax
+        mov     rdi, [rsp + 8]
+        lea     rsi, [m_tools_call]
+        mov     rcx, AF_MCP_CALL_TOOL_TEST
+        mov     r8, [rsp + 56]
+        call    af_mcp_request
+        mov     [rsp + 40], rax
+
+        lea     rdi, [rsp + 64]
+        call    af_buf_free
+        mov     rdi, [rsp + 160]
+        call    af_jsonc_dump_free
+        cmp     qword [rsp + 40], 0
+        je      .internal
+
+        mov     rdi, rbx
+        call    af_ctl_conn_server
+        mov     rdi, rax
+        call    af_ctl_server_bump_revision_local
+        mov     rdi, r12
+        call    af_jw_begin_object
+        mov     rdi, r12
+        lea     rsi, [k_server_id]
+        mov     rax, [rsp + 8]
+        mov     rdx, [rax + MC_ID]
+        call    af_jw_member_string
+        mov     rdi, r12
+        lea     rsi, [k_request_id]
+        mov     rax, [rsp + 40]
+        mov     rdx, [rax + CL_ID]
+        call    af_jw_member_uint
+        mov     rdi, r12
+        lea     rsi, [k_queued]
+        mov     rdx, 1
+        call    af_jw_member_bool
+        mov     rdi, r12
+        call    af_jw_end_object
+        AF_LEAVE_OK
+
+.free_both_internal:
+        lea     rdi, [rsp + 64]
+        call    af_buf_free
+.free_dump_internal:
+        mov     rdi, [rsp + 160]
+        call    af_jsonc_dump_free
+.internal:
+        AF_LEAVE_ERR AF_E_INTERNAL
+.unconfirmed:
+        AF_LEAVE_ERR AF_E_MCP_UNCONFIRMED
+.bad_params:
+        AF_LEAVE_ERR AF_E_CTL_PARAMS
+.not_ready:
+        AF_LEAVE_ERR AF_E_MCP_NOT_READY
+.not_found:
+        AF_LEAVE_ERR AF_E_NOTFOUND
+.done:
+        AF_LEAVE
 
 ; ---------------------------------------------------------------------------
 ; config.current

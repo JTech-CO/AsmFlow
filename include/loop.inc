@@ -28,7 +28,11 @@
 %define EPOLL_EVENT_DATA   4
 %define EPOLL_EVENT_SIZE   12
 
-%define AF_LOOP_MAX_SOURCES 256
+; Capacity budget: 128 HTTP clients + 64 control clients + two persistent
+; stdout/stderr watches for each of 256 MCP children = 704. The remaining 320
+; slots cover listeners, signalfd/timers, provider sockets, and bounded growth
+; without turning the table into an unbounded allocation.
+%define AF_LOOP_MAX_SOURCES 1024
 %define AF_LOOP_BATCH       64
 
 ; af_loop_source

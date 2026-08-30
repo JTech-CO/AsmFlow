@@ -19,6 +19,7 @@ the schema, this file, or the assembly is wrong, and the test says which case.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
@@ -33,6 +34,17 @@ ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 HEADER_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+PLAINTEXT_IPV4_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+)
+PLAINTEXT_IPV6_NETWORKS = (
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
 
 CREDENTIAL_KEYS = {
     "api_key", "apikey", "secret", "password", "token", "authorization",
@@ -199,12 +211,30 @@ def _check_url(value: str, allow_insecure: bool, pointer: str) -> bool:
     colon = host.rfind(":")
     if colon > bracket:
         host = host[:colon]
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
     if not host:
         raise Reject(pointer, "URL violates the outbound policy")
 
-    loopback = host in LOOPBACK_HOSTS
-    if not secure and not loopback and not allow_insecure:
-        raise Reject(pointer, "URL violates the outbound policy")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+
+    loopback = host == "localhost" or address in {
+        ipaddress.ip_address("127.0.0.1"),
+        ipaddress.ip_address("::1"),
+    }
+    if not secure and not loopback:
+        if isinstance(address, ipaddress.IPv4Address):
+            networks = PLAINTEXT_IPV4_NETWORKS
+        elif isinstance(address, ipaddress.IPv6Address):
+            networks = PLAINTEXT_IPV6_NETWORKS
+        else:
+            networks = ()
+        private_literal = any(address in network for network in networks)
+        if not private_literal or not allow_insecure:
+            raise Reject(pointer, "URL violates the outbound policy")
     return loopback
 
 
@@ -584,13 +614,21 @@ def validate(document: Any) -> None:
 
         if transport == "stdio":
             command = _str(server, "command", pointer)
+            if "\0" in command:
+                raise Reject(f"{pointer}/command", "embedded NUL is not permitted")
             if not command.startswith("/") or len(command) > 4096:
                 raise Reject(f"{pointer}/command", "command must be an absolute path")
             args = _array(server, "args", 0, 128, pointer)
             for arg_index, arg in enumerate(args):
-                if not isinstance(arg, str) or len(arg) > 4096:
+                if not isinstance(arg, str):
                     raise Reject(f"{pointer}/args/{arg_index}", "value has the wrong JSON type")
+                if "\0" in arg:
+                    raise Reject(f"{pointer}/args/{arg_index}", "embedded NUL is not permitted")
+                if len(arg) > 4096:
+                    raise Reject(f"{pointer}/args/{arg_index}", "value is outside the permitted range")
             cwd = _str(server, "cwd", pointer)
+            if "\0" in cwd:
+                raise Reject(f"{pointer}/cwd", "embedded NUL is not permitted")
             if not (1 <= len(cwd) <= 4096):
                 raise Reject(f"{pointer}/cwd", "value is outside the permitted range")
             env_allow = _array(server, "env_allow", 0, 128, pointer)
@@ -609,6 +647,11 @@ def validate(document: Any) -> None:
                 env_pointer = f"{pointer}/env/{name}"
                 if not ENV_RE.fullmatch(name) or len(name) > 128:
                     raise Reject(env_pointer, "environment variable name is not permitted")
+                if name in seen_allow:
+                    raise Reject(
+                        env_pointer,
+                        "env_allow and env names must be disjoint",
+                    )
                 ref_obj = _obj(ref, env_pointer)
                 _keys(ref_obj, {"source", "name"}, env_pointer)
                 _enum(ref_obj, "source", {"env"}, env_pointer)
@@ -724,6 +767,9 @@ def corpus() -> list[Case]:
     # --- listener ---
     add("listener/unknown_key", False, "additionalProperties is false",
         lambda d: d["listener"].__setitem__("typo", 1))
+    add("listener/known_key_embedded_nul_suffix", False,
+        "a known C-string prefix does not make the full JSON key known",
+        lambda d: d["listener"].__setitem__("port\0ignored", 1))
     add("listener/port_zero", False, "port minimum is 1",
         lambda d: d["listener"].__setitem__("port", 0))
     add("listener/port_max", True, "65535 is the maximum",
@@ -818,9 +864,50 @@ def corpus() -> list[Case]:
         lambda d: d["providers"].append(copy.deepcopy(d["providers"][0])))
     add("provider/remote_plain_http", False, "plain http to a remote host is refused",
         lambda d: d["providers"][0].__setitem__("base_url", "http://example.invalid/v1"))
-    add("provider/remote_plain_http_allowed", True,
-        "an explicit exception permits plain http",
+    add("provider/hostname_plain_http_flag_still_rejected", False,
+        "the exception cannot authorize a hostname because DNS may rebind",
         lambda d: (d["providers"][0].__setitem__("base_url", "http://example.invalid/v1"),
+                   d["providers"][0].__setitem__("allow_insecure_private_http", True)))
+    add("provider/private_ipv4_plain_http_requires_flag", False,
+        "RFC1918 plaintext requires the explicit exception",
+        lambda d: d["providers"][0].__setitem__("base_url", "http://10.1.2.3/v1"))
+    add("provider/private_ipv4_plain_http_allowed", True,
+        "the exception permits an RFC1918 IPv4 literal",
+        lambda d: (d["providers"][0].__setitem__("base_url", "http://192.168.1.2/v1"),
+                   d["providers"][0].__setitem__("allow_insecure_private_http", True)))
+    add("provider/link_local_ipv4_plain_http_allowed", True,
+        "the exception permits an IPv4 link-local literal",
+        lambda d: (d["providers"][0].__setitem__("base_url", "http://169.254.169.254/v1"),
+                   d["providers"][0].__setitem__("allow_insecure_private_http", True)))
+    add("provider/link_local_ipv4_plain_http_requires_flag", False,
+        "IPv4 link-local plaintext requires the explicit exception",
+        lambda d: d["providers"][0].__setitem__(
+            "base_url", "http://169.254.169.254/v1"))
+    add("provider/public_ipv4_plain_http_flag_still_rejected", False,
+        "the exception cannot authorize a public IPv4 literal",
+        lambda d: (d["providers"][0].__setitem__("base_url", "http://8.8.8.8/v1"),
+                   d["providers"][0].__setitem__("allow_insecure_private_http", True)))
+    add("provider/ipv6_loopback_plain_http", True,
+        "bracketed IPv6 loopback remains permitted without an exception",
+        lambda d: d["providers"][0].__setitem__("base_url", "http://[::1]:11434/v1"))
+    add("provider/private_ipv6_plain_http_requires_flag", False,
+        "IPv6 unique-local plaintext requires the explicit exception",
+        lambda d: d["providers"][0].__setitem__("base_url", "http://[fd12:3456::1]/v1"))
+    add("provider/private_ipv6_plain_http_allowed", True,
+        "the exception permits an IPv6 unique-local literal",
+        lambda d: (d["providers"][0].__setitem__("base_url", "http://[fc00::1]/v1"),
+                   d["providers"][0].__setitem__("allow_insecure_private_http", True)))
+    add("provider/link_local_ipv6_plain_http_allowed", True,
+        "the exception permits an IPv6 link-local literal",
+        lambda d: (d["providers"][0].__setitem__("base_url", "http://[fe80::1]/v1"),
+                   d["providers"][0].__setitem__("allow_insecure_private_http", True)))
+    add("provider/link_local_ipv6_plain_http_requires_flag", False,
+        "IPv6 link-local plaintext requires the explicit exception",
+        lambda d: d["providers"][0].__setitem__("base_url", "http://[fe80::1]/v1"))
+    add("provider/public_ipv6_plain_http_flag_still_rejected", False,
+        "the exception cannot authorize a public IPv6 literal",
+        lambda d: (d["providers"][0].__setitem__(
+            "base_url", "http://[2001:4860:4860::8888]/v1"),
                    d["providers"][0].__setitem__("allow_insecure_private_http", True)))
     add("provider/url_with_credentials", False, "embedded credentials are refused",
         lambda d: d["providers"][0].__setitem__(
@@ -917,6 +1004,18 @@ def corpus() -> list[Case]:
     add("mcp/stdio_relative_command", False, "command must be absolute",
         lambda d: d["mcp_servers"].append(
             {**copy.deepcopy(stdio_server), "command": "node"}))
+    add("mcp/stdio_command_embedded_nul", False,
+        "command cannot be truncated at an embedded NUL",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(stdio_server), "command": "/usr/bin/no\0de"}))
+    add("mcp/stdio_arg_embedded_nul", False,
+        "argv members cannot be truncated at an embedded NUL",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(stdio_server), "args": ["safe-prefix\0ignored-suffix"]}))
+    add("mcp/stdio_cwd_embedded_nul", False,
+        "cwd cannot be truncated at an embedded NUL",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(stdio_server), "cwd": "/opt/mcp\0/ignored"}))
     add("mcp/stdio_with_url", False, "url is not a stdio field",
         lambda d: d["mcp_servers"].append(
             {**copy.deepcopy(stdio_server), "url": "https://x.invalid/mcp"}))
@@ -926,6 +1025,24 @@ def corpus() -> list[Case]:
     add("mcp/http_plain_remote", False, "plain http to a remote MCP is refused",
         lambda d: d["mcp_servers"].append(
             {**copy.deepcopy(http_server), "url": "http://mcp.example.invalid/mcp"}),
+        env={"REMOTE_MCP_TOKEN": "t"})
+    add("mcp/http_plain_hostname_flag_still_rejected", False,
+        "the exception cannot authorize an MCP hostname because DNS may rebind",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(http_server), "url": "http://mcp.example.invalid/mcp",
+            "allow_insecure_private_http": True}),
+        env={"REMOTE_MCP_TOKEN": "t"})
+    add("mcp/http_plain_private_allowed", True,
+        "the exception permits a private IPv4 literal for MCP HTTP",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(http_server), "url": "http://172.16.1.2/mcp",
+            "allow_insecure_private_http": True}),
+        env={"REMOTE_MCP_TOKEN": "t"})
+    add("mcp/http_plain_public_flag_still_rejected", False,
+        "the exception cannot authorize a public MCP HTTP literal",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(http_server), "url": "http://203.0.113.1/mcp",
+            "allow_insecure_private_http": True}),
         env={"REMOTE_MCP_TOKEN": "t"})
     add("mcp/backoff_ceiling_below_floor", False,
         "max_backoff_ms must be at least backoff_ms",
@@ -947,6 +1064,12 @@ def corpus() -> list[Case]:
     add("mcp/duplicate_env_allow", False, "env_allow is uniqueItems",
         lambda d: d["mcp_servers"].append({
             **copy.deepcopy(stdio_server), "env_allow": ["PATH", "PATH"]}))
+    add("mcp/env_allow_env_collision", False,
+        "one child variable cannot be inherited and explicitly mapped",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(stdio_server),
+            "env_allow": ["PATH"],
+            "env": {"PATH": {"source": "env", "name": "PATH"}}}))
     add("mcp/env_secret_ref", True, "an env SecretRef is accepted",
         lambda d: d["mcp_servers"].append({
             **copy.deepcopy(stdio_server),
@@ -956,6 +1079,12 @@ def corpus() -> list[Case]:
         lambda d: d["mcp_servers"].append({
             **copy.deepcopy(stdio_server),
             "env": {"lower": {"source": "env", "name": "FILESYSTEM_TOKEN"}}}))
+    add("mcp/env_child_name_embedded_nul_suffix", False,
+        "the full JSON object key is validated as the child variable name",
+        lambda d: d["mcp_servers"].append({
+            **copy.deepcopy(stdio_server),
+            "env_allow": [],
+            "env": {"PATH\0ignored": {"source": "env", "name": "PATH"}}}))
     add("mcp/duplicate_id", False, "MCP ids are unique",
         lambda d: d["mcp_servers"].extend([
             copy.deepcopy(stdio_server), copy.deepcopy(stdio_server)]))

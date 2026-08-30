@@ -1,0 +1,24 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-id",
+  "result": {
+    "resultType": "complete",
+    "supportedVersions": [
+      "2026-07-28"
+    ],
+    "capabilities": {
+      "tools": {},
+      "resources": {},
+      "prompts": {}
+    },
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "asmflow-http-mock",
+        "version": "1.0.0"
+      }
+    },
+    "instructions": "M9 integration fixture.",
+    "ttlMs": 60000,
+    "cacheScope": "private"
+  }
+}

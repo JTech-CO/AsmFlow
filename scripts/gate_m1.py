@@ -190,8 +190,18 @@ def check_no_linker_warnings(build_dir: Path) -> None:
     failed build; this re-runs the build to confirm it is genuinely warning-free
     rather than merely cached.
     """
+    # GNU make expands BUILD_DIR inside pattern-rule target names.  Passing an
+    # absolute repository path that contains whitespace therefore splits one
+    # target into several words even though subprocess correctly preserves the
+    # command-line argument.  Keep an in-repository build directory relative to
+    # ROOT; the same artifacts are selected without injecting ROOT's spelling
+    # into make syntax.
+    try:
+        make_build_dir = build_dir.relative_to(ROOT)
+    except ValueError:
+        make_build_dir = build_dir
     result = subprocess.run(
-        ["make", "--no-print-directory", "build", f"BUILD_DIR={build_dir}"],
+        ["make", "--no-print-directory", "build", f"BUILD_DIR={make_build_dir}"],
         cwd=ROOT,
         capture_output=True,
         text=True,

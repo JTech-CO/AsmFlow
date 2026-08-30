@@ -9,9 +9,99 @@ once executable releases begin.
 
 ### Planned
 
-- MCP stdio and Streamable HTTP supervision.
 - ncursesw TUI.
 - Security hardening, observability, and packaging.
+
+## [0.8.0] - 2026-08-30
+
+### Added
+
+- MCP Streamable HTTP supervision driven by the existing epoll/libcurl-multi
+  reactor. The modern `2026-07-28` adapter sends matching per-request `_meta`
+  and `MCP-Protocol-Version` metadata and accepts bounded JSON or
+  request-scoped SSE POST responses.
+- A physically separate legacy `2025-11-25` HTTP adapter with initialization,
+  session commit and echo, initialized notification, GET event stream,
+  optional `Last-Event-ID`, and explicit timeout cancellation.
+- Transport-neutral MCP control and readiness handling, including HTTP
+  start/stop/restart/discover/tool-test lifecycle and current validated tools
+  as the required readiness condition.
+- Validated `ttlMs` and `cacheScope`, bounded monotonic expiry, lazy
+  transactional refresh, and server-local cache identity partitioned by a
+  non-secret authorization-context fingerprint.
+- Five focused M9 integration suites with 17 tests, nine protocol fixtures,
+  `scripts/gate_m9.py`, and `make gate-m9`.
+
+### Changed
+
+- The active milestone advances to M10. MCP HTTP requests are serialized per
+  configured server while stdio framing and process lifecycles remain
+  independent.
+- HTTP era fallback is limited to an unrecognized bodyless 400 response to the
+  modern discovery probe. Recognized JSON-RPC errors, version/header mismatch,
+  redirects, 5xx responses, timeouts, and transport failures never select the
+  legacy adapter.
+
+### Security
+
+- MCP HTTP bearer and custom-header credentials are resolved from environment
+  SecretRefs while constructing a request, securely released afterward, and
+  never exposed through the control surface or request body.
+- TLS peer and hostname verification are explicit, redirects are disabled,
+  proxy environment variables are ignored, and automatic response
+  decompression is not requested.
+- Plaintext MCP HTTP is limited to loopback by default. The explicit insecure
+  private-network flag admits only private/link-local IP literals, never a
+  public address or hostname, and cannot disable TLS verification.
+- Response headers, bodies, SSE events/counts, and legacy session state all
+  have fixed hard limits.
+
+## [0.7.0] - 2026-08-29
+
+### Added
+
+- MCP stdio process supervision with direct `execve`-style argv, an explicit
+  working directory, and an allowlisted environment. Each emitted environment
+  entry is capped at 128 KiB and the complete owned `envp` allocation,
+  including its pointer array, is capped at 1 MiB.
+- Process-lifetime modern `2026-07-28` discovery and isolated legacy
+  `2025-11-25` initialization adapters. `mcp.list` and `mcp.get` expose the
+  negotiated `protocol_version`, which is cleared whenever that process view
+  ends.
+- Timeout cancellation through `notifications/cancelled`; a timed-out modern
+  probe is reaped before a fresh process receives legacy initialization, so
+  protocol eras are never interleaved in one process.
+- Strict NDJSON stdout handling for UTF-8, JSON-RPC correlation, member types,
+  and accumulated frame limits. Any stdout noise is protocol contamination;
+  stderr is drained separately and retains only its newest 64 KiB.
+- Transactional, semantically validated tools, resources, and prompts
+  inventories. Current tools are required for readiness; resources and prompts
+  are optional caches and a failed refresh cannot replace a validated value.
+- Nine live MCP control methods: `mcp.list`, `mcp.get`, `mcp.inventory`,
+  `mcp.start`, `mcp.stop`, `mcp.restart`, `mcp.reset_crash_loop`,
+  `mcp.discover`, and the explicitly confirmed asynchronous `mcp.tool_test`.
+- Required-MCP dependency counts in `/readyz`, including current validated
+  tools rather than process liveness alone.
+- A true sliding restart budget, bounded exponential backoff, a crash-loop
+  latch released only by explicit reset, and same-process-group helper cleanup
+  even when the direct child exits first.
+- `scripts/gate_m8.py`, `make gate-m8`, and the six focused stdio,
+  malformed-input, lifecycle, crash-loop, and zombie/reaping targets from the
+  M8 harness.
+
+### Changed
+
+- The active milestone advances to M9. Streamable HTTP transport,
+  transport-version error handling, cache TTL/scope and credential-context
+  partitioning remain M9 work and are not claimed by the 0.7.0 stdio adapter.
+
+### Security
+
+- MCP children do not receive the daemon's inherited environment; only
+  explicitly allowlisted or mapped variables are emitted, and stdout is
+  protocol-only.
+- A tool test requires `confirmed=true` and a tool in the current validated
+  inventory. AsmFlow still performs no automatic model-driven tool execution.
 
 ## [0.6.0] - 2026-08-27
 

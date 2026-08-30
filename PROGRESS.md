@@ -2,7 +2,7 @@
 
 ## Current phase
 
-`M8 — MCP stdio supervisor`
+`M10 — TUI and CLI`
 
 ## Completed
 
@@ -181,35 +181,92 @@
   - 47 assembly tests / 183 checks across `route/` and `prov/`, 1400-scenario
     parity corpus, and five integration suites.
 
+- 2026-08-29: M8 MCP stdio supervisor complete (component verification
+  recorded below).
+  - Child processes are launched with literal argv, an explicit cwd, and only
+    allowlisted or mapped environment entries; no shell is involved. Embedded
+    NUL is rejected, each `NAME=value` entry is capped at 128 KiB, and the
+    complete owned `envp` allocation, including pointers, is capped at 1 MiB.
+  - stdout is strict bounded NDJSON: invalid UTF-8, invalid JSON-RPC shapes,
+    unmatched correlation, noise, blank lines, and oversized accumulated
+    frames are protocol failures. stderr drains independently and retains the
+    newest 64 KiB under its line and stream bounds.
+  - Modern `server/discover` and legacy initialize are separate
+    process-lifetime adapters. The negotiated `protocol_version` is owned by
+    that process view; a timed-out discover is cancelled, stopped, and reaped
+    before a fresh process receives legacy initialize.
+  - Tools, resources, and prompts are fetched into bounded, semantically
+    validated, transactional inventories. Current tools are required for
+    readiness; optional resource/prompt refresh failures preserve the last
+    validated cache.
+  - All nine MCP control methods are live. Start, stop, restart, discover, and
+    tool-test work is queued/asynchronous. `mcp.reset_crash_loop` synchronously
+    clears only a latched crash-loop history and places that server on its
+    restart path. `mcp.tool_test` also requires `confirmed=true`, validates the
+    tool against current inventory, and is polled through `mcp.get`.
+  - Restart accounting is a true sliding timestamp window with bounded
+    exponential backoff and a crash-loop latch that only explicit reset clears.
+    Stop, timeout, crash, EOF, shutdown, direct-child reap, and same-PGID helper
+    cleanup paths leave zero zombies within their bounded budgets.
+  - Focused M8 integration verification ran 38 tests with zero skips; native
+    MCP verification ran 38 tests / 350 checks; the full native suite ran 222
+    tests / 4155 checks; ABI verification ran 8 tests / 27 checks; MCP
+    Valgrind reported 0 errors and 0 definitely lost bytes.
+
+- 2026-08-30: M9 MCP Streamable HTTP and version adapters complete
+  (`make gate-m9`).
+  - One bounded MCP HTTP libcurl-multi engine is driven by the existing epoll
+    and timerfd reactor; no blocking libcurl wait or runtime fallback language
+    was introduced.
+  - The modern `2026-07-28` adapter sends matching per-request `_meta` and
+    `MCP-Protocol-Version`, accepts JSON or request-scoped SSE POST responses,
+    and physically has no session, GET, DELETE, or `Last-Event-ID` state.
+  - Era detection is exact: only an unrecognized bodyless HTTP 400 response to
+    modern discovery selects legacy. Recognized JSON-RPC/version/header/method
+    errors, redirects, 5xx responses, timeouts, and transport failures do not.
+  - The isolated legacy `2025-11-25` allocation owns initialize/session state,
+    initialized POST, session GET stream and optional resume ID. A legacy
+    request timeout closes the transfer and posts explicit cancellation;
+    modern cancellation closes only its request transfer.
+  - HTTP credentials are resolved from environment SecretRefs at request
+    construction. TLS verification is explicit, redirects and proxy discovery
+    are disabled, and plaintext is limited to loopback or an explicit
+    private/link-local IP-literal exception.
+  - `ttlMs` and `cacheScope` commit transactionally with validated inventory.
+    Positive monotonic TTLs refresh lazily, are capped at 300 seconds, legacy
+    defaults to 60 seconds, and every cache stays server-local and partitioned
+    by a non-secret authorization-context fingerprint.
+  - The five focused M9 suites ran 17 tests with zero skips across nine
+    fixtures; native MCP verification ran 38 tests / 350 checks; the full
+    native suite ran 222 tests / 4167 checks; static M9 checks were 10/10; MCP
+    Valgrind reported 0 errors and 0 definitely lost bytes.
+
 ## Next actions
 
-1. Spawn MCP stdio servers with `execve`-style argument vectors and an
-   allowlisted environment, never through a shell.
-2. Implement the JSON-RPC framing and the `mcp_frame_max_bytes` ceiling on what
-   accumulates, the way the control plane and the HTTP header section already
-   do.
-3. Implement era detection: the modern `server/discover` probe, and the
-   version-isolated legacy initialize adapter (ADR 0004).
-4. Supervise: restart policy, backoff, the crash-loop budget, and stderr
-   capture bounded by `stderr_line_max_bytes`.
-5. Add `scripts/gate_m8.py`, and replace the `mcp.*` control methods'
-   `unsupported_in_this_build` answers with real ones.
+1. Implement the ncursesw lifecycle and one cleanup path that restores echo,
+   cursor, and terminal mode after normal exit, SIGINT, or daemon disconnect.
+2. Add theme/monochrome behavior and responsive 80x24, 100x30, and 140x40
+   layouts with priority-column collapse and no horizontal scrolling.
+3. Build components and screens from control-protocol snapshots while
+   preserving selection by stable ID across refreshes.
+4. Add the keymap, keyboard task scripts, command palette, complete Level 2–4
+   confirmation coverage, and a bounded/escaped log viewer.
+5. Implement `asmflowctl` table output and `--json` output matching the control
+   contract without direct SQLite access.
+6. Add and pass `test-tui-layout`, `test-tui-keyboard`, `test-tui-mono`,
+   `test-tui-terminal-restore`, and `test-cli-contract`.
 
 ## Open questions
 
 - Whether 1.0 release artifacts should use glibc-only dynamic linking or also provide a
   musl build after the glibc path is stable.
 - Whether HTTP/2 is required for 1.0 or merely supported when libcurl negotiates it.
-- Whether the arena guard mode should be extended to the HTTP connection buffers
-  once M5 exists, or stay limited to request arenas.
+- Whether the arena guard mode should be extended to the HTTP connection
+  buffers or stay limited to request arenas.
 - Whether the control protocol should gain a handshake carrying
   `protocol_version` before the first request, as `docs/API_CONTRACT.md` 12
   anticipates, or keep reporting it from `system.version` as it does now. The
   console in M10 is the first thing that would negotiate on it.
-- Whether a bracketed IPv6 literal in a *provider* URL, such as
-  `https://[::1]/v1`, should be recognised as loopback. It currently is not, so
-  such a URL needs HTTPS or the explicit insecure-HTTP exception. That is the
-  safe direction but diverges from what an operator would expect.
 - Whether the exchange table should grow beyond 64 slots. It is a hard ceiling
   independent of `limits.max_active_requests`, which can lower it and cannot
   raise it. Sixty-four upstream sockets plus 128 clients fits the loop's
@@ -217,6 +274,9 @@
 - Whether a provider credential should be readable from a file as well as an
   environment variable. It is read at request time rather than cached on the
   snapshot, so the read is already pluggable; nothing has asked for it yet.
+- Whether M11 should use cgroups or namespaces to contain MCP descendants that
+  deliberately escape the supervised process group with `setsid` or
+  `setpgid`. M8 cleans only the same process group and does not claim a sandbox.
 
 ## Resolved questions
 
@@ -227,6 +287,9 @@
   or `localhost`, and `::1` both binds and counts as loopback. A hostname is
   refused, because a daemon whose exposure depends on a DNS answer is a daemon
   that a DNS answer can expose.
+- 2026-08-30: bracketed IPv6 URL literals are unwrapped before address
+  classification, so `[::1]` is loopback and private/link-local IPv6 literals
+  remain gated by the explicit insecure-private-HTTP option.
 
 ## Decision log
 
@@ -289,10 +352,28 @@
 | 2026-08-27 | A test daemon is ready when it says it is, not when its socket answers | The control socket binds several startup steps before the upstream engine and the data-plane listener open their own descriptors, and that ordering is deliberate: an operator connecting mid-start should see `ready: false` rather than a refused connection. A descriptor baseline taken the moment the socket answered was counting a daemon that had not finished starting, and would then see three descriptors appear from nowhere — which is how the M4 disconnect test failed on one CI machine and passed on another from the same commit. |
 | 2026-08-27 | A suite that needs a binary skips from the constructor, not from each test class | `make check` is the buildless M0 gate, so a suite needing a daemon must skip there rather than error. Stated per class it was forgotten by all seventeen M5 classes; stated once on the only path that spawns a daemon it cannot be. `make check-buildless` reproduces the condition on a machine that has built. |
 | 2026-08-27 | A generation endpoint answers `unsupported_in_this_build`, not `not_ready` and not an empty completion | "A subsystem is absent from this binary" is a different fact from "a present subsystem is not usable yet", and an empty completion is indistinguishable from a real one. |
+| 2026-08-29 | An MCP era belongs to one process lifetime; timed-out modern discovery falls back only through a fresh process | Cancellation is advisory. Reusing the probed process for legacy initialize could interleave eras if the server completed the cancelled request late. |
+| 2026-08-29 | MCP inventory commits transactionally; validated tools are required for readiness while resources and prompts are optional caches | A malformed required tool list must not make a server ready, while an optional refresh failure must not destroy the last known-valid display state. |
+| 2026-08-29 | Restart budgeting uses a true sliding timestamp window and crash-loop recovery requires an explicit reset | A tumbling window permits boundary bursts, and stop/start aliases must not bypass an operator-visible exhausted-budget latch. |
+| 2026-08-30 | Modern and legacy MCP HTTP state use physically different adapter allocations | The modern type cannot accidentally acquire legacy session, GET-stream, or resume state through a shared optional field. |
+| 2026-08-30 | Only an unrecognized bodyless HTTP 400 response to modern discovery is legacy evidence | Recognized JSON-RPC errors and transient transport failures prove either modern semantics or no era at all; treating either as downgrade evidence would hide faults. |
+| 2026-08-30 | Modern HTTP timeout closes only the request transfer; legacy timeout also sends its session-scoped cancellation notification | The two revisions define different cancellation lifecycles, so sharing one policy would leak legacy behavior into modern requests. |
+| 2026-08-30 | HTTP inventory caches remain server-local and use only a non-secret credential-change fingerprint | Even public cache scope cannot authorize cross-server or cross-credential reuse, and retaining the credential itself would create a new secret store. |
+| 2026-08-30 | MCP HTTP redirects and proxy discovery are disabled and TLS verification is never controlled by the plaintext-private-network exception | A configured endpoint and credential must not be silently redirected or routed through ambient process settings, and allowing HTTP to a private literal is not permission to weaken HTTPS. |
 
 ## Last passed gate
 
-`make gate-m7` at AsmFlow 0.6.0 — M0 through M7 all green.
-See the run recorded in `CHANGELOG.md`; the counts are printed by the gate
-itself rather than restated here, because a number copied by hand is a number
-that goes stale.
+**`BUILD_DIR=build make gate-m9` from the WSL repository root at
+AsmFlow 0.8.0 — PASS (2026-08-30)**
+
+M0 through M9 are all green.
+
+- The five focused M9 integration targets ran 17/17 tests with zero skips:
+  modern 3, legacy 2, version matrix 3, stream/cancellation 3, and security 6.
+- The six focused M8 regression targets ran 38/38 tests with zero skips.
+- `build/debug/asmflow-tests --filter mcp/ --verbose`: 38 tests / 350 checks.
+- Full native `build/debug/asmflow-tests`: 222 tests / 4167 checks.
+- Static ABI audit: 726 framed functions, 223 conforming leaf functions, and
+  1 documented exemption.
+- Static M9 gate checks: 10/10 PASS.
+- MCP Valgrind: 0 errors / 0 definitely lost bytes.

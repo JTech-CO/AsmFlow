@@ -41,6 +41,7 @@
         extern af_jsonc_object_iter
         extern af_jsonc_object_iter_next
         extern af_jsonc_object_iter_key
+        extern af_jsonc_object_iter_key_len
         extern af_jsonc_object_iter_value
 
         section .text
@@ -307,6 +308,13 @@ af_json_enforce_limits:
 .object_loop:
         test    r14, r14
         jz      .ok
+        ; Object names are JSON strings too. Use Jansson's explicit length so
+        ; embedded NUL cannot truncate the measurement and so max_string
+        ; bounds keys as well as values.
+        mov     rdi, r14
+        call    af_jsonc_object_iter_key_len
+        cmp     rax, [r12 + AF_JSONLIM_MAX_STRING]
+        ja      .too_long
         mov     rdi, r14
         call    af_jsonc_object_iter_value
         mov     rdi, rax
@@ -629,6 +637,7 @@ af_json_string_of:
 ;
 ; af_json_iter_begin(json_t *object) -> void * (NULL when empty)
 ; af_json_iter_key(void *iter) -> const char * (BORROWED)
+; af_json_iter_key_len(void *iter) -> u64
 ; af_json_iter_value(void *iter) -> json_t * (BORROWED)
 ; af_json_iter_next(json_t *object, void *iter) -> void * (NULL at the end)
 ; ---------------------------------------------------------------------------
@@ -642,6 +651,12 @@ af_json_iter_begin:
 af_json_iter_key:
         AF_ENTER 0
         call    af_jsonc_object_iter_key
+        AF_LEAVE
+
+        global af_json_iter_key_len
+af_json_iter_key_len:
+        AF_ENTER 0
+        call    af_jsonc_object_iter_key_len
         AF_LEAVE
 
         global af_json_iter_value

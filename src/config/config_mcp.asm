@@ -25,12 +25,14 @@
 
         extern af_arena_calloc
         extern af_cstr_len
+        extern af_cstr_eq
 
         extern af_json_array_at
         extern af_json_string_of
         extern af_json_type
         extern af_json_iter_begin
         extern af_json_iter_key
+        extern af_json_iter_key_len
         extern af_json_iter_value
         extern af_json_iter_next
 
@@ -72,6 +74,11 @@
 
         extern m_bad_id, m_dup_id, m_bad_url, m_bad_env, m_cmd_absolute
         extern m_backoff, m_bad_enum_value, m_bad_path, m_dup_entry
+
+        section .rodata
+
+m_mcp_embedded_nul: db "embedded NUL is not permitted in a process string", 0
+m_mcp_env_collision: db "env_allow and env names must be disjoint", 0
 
         section .text
 
@@ -270,6 +277,13 @@ af_cfg_load_mcp_servers:
         jz      .bad_command
         cmp     rax, 4096
         ja      .bad_command
+        ; JSON strings carry an explicit byte length while execve consumes a
+        ; NUL-terminated C string. Refuse any embedded NUL before interning can
+        ; turn a validated value into a shorter command.
+        mov     rdi, [rsp]
+        call    af_cstr_len
+        cmp     rax, [rsp + 8]
+        jne     .bad_command_nul
         mov     rcx, [rsp]
         cmp     byte [rcx], '/'
         jne     .bad_command
@@ -323,6 +337,10 @@ af_cfg_load_mcp_servers:
         jz      .bad_cwd
         cmp     rax, 4096
         ja      .bad_cwd
+        mov     rdi, [rsp]
+        call    af_cstr_len
+        cmp     rax, [rsp + 8]
+        jne     .bad_cwd_nul
         lea     rdi, [r12 + CFG_ARENA]
         mov     rsi, [rsp]
         mov     rdx, [rsp + 8]
@@ -543,11 +561,25 @@ af_cfg_load_mcp_servers:
         lea     rcx, [m_cmd_absolute]
         call    af_cfg_fail_here
         AF_LEAVE
+.bad_command_nul:
+        mov     rdi, r13
+        lea     rsi, [k_command]
+        mov     rdx, AF_E_CFG_SCHEMA
+        lea     rcx, [m_mcp_embedded_nul]
+        call    af_cfg_fail_here
+        AF_LEAVE
 .bad_cwd:
         mov     rdi, r13
         lea     rsi, [k_cwd]
         mov     rdx, AF_E_CFG_PATH
         lea     rcx, [m_bad_path]
+        call    af_cfg_fail_here
+        AF_LEAVE
+.bad_cwd_nul:
+        mov     rdi, r13
+        lea     rsi, [k_cwd]
+        mov     rdx, AF_E_CFG_SCHEMA
+        lea     rcx, [m_mcp_embedded_nul]
         call    af_cfg_fail_here
         AF_LEAVE
 .bad_url:
@@ -758,6 +790,12 @@ af_cfg_load_string_vector:
         call    af_json_string_of
         test    rax, rax
         js      .bad_member
+        ; argv is a C-string vector. Its JSON byte length must match the first
+        ; NUL exactly, otherwise execve would receive only an unchecked prefix.
+        mov     rdi, [rsp]
+        call    af_cstr_len
+        cmp     rax, [rsp + 8]
+        jne     .bad_nul
         mov     rax, [rsp + 8]
         cmp     rax, [rsp + 48]
         ja      .bad_member
@@ -781,6 +819,13 @@ af_cfg_load_string_vector:
         xor     esi, esi
         mov     rdx, AF_E_CFG_SCHEMA
         lea     rcx, [m_bad_enum_value]
+        call    af_cfg_fail_here
+        AF_LEAVE
+.bad_nul:
+        mov     rdi, r13
+        xor     esi, esi
+        mov     rdx, AF_E_CFG_SCHEMA
+        lea     rcx, [m_mcp_embedded_nul]
         call    af_cfg_fail_here
         AF_LEAVE
 .nomem:
@@ -964,22 +1009,39 @@ af_cfg_load_env_pairs:
         mov     rsi, [rsp + 56]
         call    af_cfg_err_push_key
 
+        mov     rdi, r15
+        call    af_json_iter_key_len
+        mov     [rsp + 24], rax         ; full JSON key length
         mov     rdi, [rsp + 56]
-        call    af_cstr_len
-        mov     rdi, [rsp + 56]
-        mov     rsi, rax
+        mov     rsi, [rsp + 24]
         call    af_cfg_env_name_valid
         test    rax, rax
         jz      .bad_env
+
+        ; A child-visible variable has exactly one source.  If the same name
+        ; appeared in env_allow and env, execve would receive duplicate NAME=
+        ; entries and the observed value would depend on consumer behaviour.
+        mov     qword [rsp + 72], 0
+.allow_collision_loop:
+        mov     rax, [rsp + 72]
+        cmp     rax, [r14 + MCP_ENV_ALLOW_COUNT]
+        jae     .allow_disjoint
+        mov     rcx, [r14 + MCP_ENV_ALLOW]
+        mov     rdi, [rsp + 56]
+        mov     rsi, [rcx + rax * 8]
+        call    af_cstr_eq
+        test    rax, rax
+        jnz     .env_collision
+        inc     qword [rsp + 72]
+        jmp     .allow_collision_loop
+.allow_disjoint:
 
         mov     rax, [rsp + 32]
         imul    rax, rax, ENVP_SIZE
         add     rax, [r14 + MCP_ENV_PAIRS]
         mov     [rsp + 64], rax         ; destination pair
 
-        mov     rdi, [rsp + 56]
-        call    af_cstr_len
-        mov     rdx, rax
+        mov     rdx, [rsp + 24]
         lea     rdi, [r12 + CFG_ARENA]
         mov     rsi, [rsp + 56]
         mov     rcx, [rsp + 64]
@@ -1015,6 +1077,13 @@ af_cfg_load_env_pairs:
         xor     esi, esi
         mov     rdx, AF_E_CFG_SCHEMA
         lea     rcx, [m_bad_env]
+        call    af_cfg_fail_here
+        AF_LEAVE
+.env_collision:
+        mov     rdi, r13
+        xor     esi, esi
+        mov     rdx, AF_E_CFG_DUPLICATE
+        lea     rcx, [m_mcp_env_collision]
         call    af_cfg_fail_here
         AF_LEAVE
 .too_many:

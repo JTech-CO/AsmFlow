@@ -9,6 +9,7 @@
 
 %include "asmflow.inc"
 %include "loop.inc"
+%include "fileio.inc"
 %include "control.inc"
 %include "test.inc"
 
@@ -45,9 +46,6 @@
         extern af_sys_write
         extern af_sys_read
         extern af_sys_dup
-
-%define O_NONBLOCK 0x800
-%define O_CLOEXEC  0x80000
 
         section .data
 ; The handler records what it saw. A global is acceptable here because the test

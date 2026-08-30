@@ -1,0 +1,30 @@
+{
+  "jsonrpc": "2.0",
+  "id": "fixture-id",
+  "result": {
+    "resultType": "complete",
+    "tools": [
+      {
+        "name": "echo",
+        "description": "Echo text through the HTTP mock",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string",
+              "x-mcp-header": "Tenant"
+            }
+          },
+          "required": [
+            "text"
+          ]
+        }
+      }
+    ],
+    "ttlMs": 60000,
+    "cacheScope": "private"
+  }
+}

@@ -32,9 +32,11 @@
 
 /* --- what the assembly provides -------------------------------------------
  *
- * Implemented in src/providers/. Each returns a signed count or a sentinel;
- * mapping a sentinel onto libcurl's magic return value is this file's job,
- * because the magic value is a property of the header.
+ * Implemented in assembly. Each returns a signed count or a sentinel; mapping
+ * a sentinel onto libcurl's magic return value is this file's job, because the
+ * magic value is a property of the header. Provider and MCP HTTP callbacks are
+ * deliberately separate so neither protocol's state can be passed to the
+ * other's assembly entry points.
  */
 
 /* The multi handle wants `fd` watched for `what` (CURL_POLL_*). Returns 0 on
@@ -56,6 +58,13 @@ int64_t af_prov_on_write(void *user, const char *at, size_t length);
  * this code depends on should not be one that varies. */
 int64_t af_prov_on_header(void *user, const char *at, size_t length);
 
+/* The MCP Streamable HTTP adapter has the same ABI shape and separate assembly
+ * entry points. The C side still performs no dispatch or protocol decisions. */
+int64_t af_mcp_http_on_socket(void *user, int64_t fd, int64_t what);
+int64_t af_mcp_http_on_timer(void *user, int64_t timeout_ms);
+int64_t af_mcp_http_on_write(void *user, const char *at, size_t length);
+int64_t af_mcp_http_on_header(void *user, const char *at, size_t length);
+
 /* --- multi-handle callbacks ----------------------------------------------- */
 
 static int af_tramp_socket(CURL *easy, curl_socket_t s, int what, void *userp,
@@ -72,10 +81,27 @@ static int af_tramp_timer(CURLM *multi, long timeout_ms, void *userp)
     return (int)af_prov_on_timer(userp, (int64_t)timeout_ms);
 }
 
+static int af_mcp_http_tramp_socket(CURL *easy, curl_socket_t s, int what,
+                                    void *userp, void *socketp)
+{
+    (void)easy;
+    (void)socketp;
+    return (int)af_mcp_http_on_socket(userp, (int64_t)s, (int64_t)what);
+}
+
+static int af_mcp_http_tramp_timer(CURLM *multi, long timeout_ms, void *userp)
+{
+    (void)multi;
+    return (int)af_mcp_http_on_timer(userp, (int64_t)timeout_ms);
+}
+
 /* --- easy-handle callbacks ------------------------------------------------ */
 
 static size_t af_tramp_write(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
+    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+        return 0;
+    }
     size_t length = size * nmemb;
     int64_t taken = af_prov_on_write(userdata, ptr, length);
 
@@ -92,8 +118,44 @@ static size_t af_tramp_write(char *ptr, size_t size, size_t nmemb, void *userdat
 
 static size_t af_tramp_header(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
+    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+        return 0;
+    }
     size_t length = size * nmemb;
     int64_t taken = af_prov_on_header(userdata, ptr, length);
+
+    if (taken < 0) {
+        return 0;
+    }
+    return (size_t)taken;
+}
+
+static size_t af_mcp_http_tramp_write(char *ptr, size_t size, size_t nmemb,
+                                      void *userdata)
+{
+    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+        return 0;
+    }
+    size_t length = size * nmemb;
+    int64_t taken = af_mcp_http_on_write(userdata, ptr, length);
+
+    if (taken == AF_CURL_TAKE_PAUSE) {
+        return CURL_WRITEFUNC_PAUSE;
+    }
+    if (taken < 0) {
+        return 0;
+    }
+    return (size_t)taken;
+}
+
+static size_t af_mcp_http_tramp_header(char *ptr, size_t size, size_t nmemb,
+                                       void *userdata)
+{
+    if (nmemb != 0 && size > SIZE_MAX / nmemb) {
+        return 0;
+    }
+    size_t length = size * nmemb;
+    int64_t taken = af_mcp_http_on_header(userdata, ptr, length);
 
     if (taken < 0) {
         return 0;
@@ -137,6 +199,27 @@ void *af_curl_multi_new(void *user)
     if (curl_multi_setopt(multi, CURLMOPT_SOCKETFUNCTION, af_tramp_socket) != CURLM_OK
         || curl_multi_setopt(multi, CURLMOPT_SOCKETDATA, user) != CURLM_OK
         || curl_multi_setopt(multi, CURLMOPT_TIMERFUNCTION, af_tramp_timer) != CURLM_OK
+        || curl_multi_setopt(multi, CURLMOPT_TIMERDATA, user) != CURLM_OK) {
+        curl_multi_cleanup(multi);
+        return NULL;
+    }
+    return multi;
+}
+
+/* A distinct multi handle for MCP HTTP. It is driven by the same AsmFlow
+ * epoll loop, but its callback state and completion policy stay in src/mcp/. */
+void *af_curl_mcp_multi_new(void *user)
+{
+    CURLM *multi = curl_multi_init();
+
+    if (multi == NULL) {
+        return NULL;
+    }
+    if (curl_multi_setopt(multi, CURLMOPT_SOCKETFUNCTION,
+                          af_mcp_http_tramp_socket) != CURLM_OK
+        || curl_multi_setopt(multi, CURLMOPT_SOCKETDATA, user) != CURLM_OK
+        || curl_multi_setopt(multi, CURLMOPT_TIMERFUNCTION,
+                             af_mcp_http_tramp_timer) != CURLM_OK
         || curl_multi_setopt(multi, CURLMOPT_TIMERDATA, user) != CURLM_OK) {
         curl_multi_cleanup(multi);
         return NULL;
@@ -247,6 +330,27 @@ void *af_curl_easy_new(void *user)
     return easy;
 }
 
+/* As above, but response bytes can only enter the MCP HTTP adapter. */
+void *af_curl_mcp_easy_new(void *user)
+{
+    CURL *easy = curl_easy_init();
+
+    if (easy == NULL) {
+        return NULL;
+    }
+    if (curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION,
+                         af_mcp_http_tramp_write) != CURLE_OK
+        || curl_easy_setopt(easy, CURLOPT_WRITEDATA, user) != CURLE_OK
+        || curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION,
+                            af_mcp_http_tramp_header) != CURLE_OK
+        || curl_easy_setopt(easy, CURLOPT_HEADERDATA, user) != CURLE_OK
+        || curl_easy_setopt(easy, CURLOPT_PRIVATE, user) != CURLE_OK) {
+        curl_easy_cleanup(easy);
+        return NULL;
+    }
+    return easy;
+}
+
 void af_curl_easy_free(void *easy)
 {
     if (easy != NULL) {
@@ -271,6 +375,18 @@ int af_curl_set_protocols(void *easy, const char *csv)
 int af_curl_set_follow_location(void *easy, int64_t on)
 {
     return (int)curl_easy_setopt((CURL *)easy, CURLOPT_FOLLOWLOCATION, (long)on);
+}
+
+int af_curl_set_http_get(void *easy)
+{
+    return (int)curl_easy_setopt((CURL *)easy, CURLOPT_HTTPGET, 1L);
+}
+
+/* An empty proxy string overrides libcurl's proxy environment discovery. The
+ * assembly caller chooses this policy explicitly for configured origins. */
+int af_curl_disable_proxy(void *easy)
+{
+    return (int)curl_easy_setopt((CURL *)easy, CURLOPT_PROXY, "");
 }
 
 int af_curl_set_tls_verify(void *easy, int64_t peer, int64_t host)

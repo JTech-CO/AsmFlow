@@ -144,7 +144,13 @@ TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
         test-routing test-routing-parity test-circuit-timeline \
         test-fallback-invariant test-routing-concurrency \
         test-routing-fault-soak valgrind-routing \
-        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 gate-m7 \
+        test-mcp-stdio-modern test-mcp-stdio-legacy \
+        test-mcp-stdio-malformed test-mcp-process-lifecycle \
+        test-mcp-crash-loop test-mcp-zombie-soak valgrind-mcp \
+        test-mcp-http-modern test-mcp-http-legacy \
+        test-mcp-version-matrix test-mcp-http-stream \
+        test-mcp-http-security \
+        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 gate-m7 gate-m8 gate-m9 \
         toolchain-versions
 
 help:
@@ -171,6 +177,17 @@ help:
 	  '  make valgrind-unit  Unit tests under Valgrind memcheck' \
 	  '  make abi-audit      Static callee-saved register audit' \
 	  '  make gdb-abi-smoke  Stop inside the alignment probe under GDB' \
+	  '  make test-mcp-stdio-modern   Modern MCP stdio discovery/inventory' \
+	  '  make test-mcp-stdio-legacy   Legacy initialize/inventory adapter' \
+	  '  make test-mcp-stdio-malformed  Protocol corruption and readiness' \
+	  '  make test-mcp-process-lifecycle  argv/env/cwd/shutdown lifecycle' \
+	  '  make test-mcp-crash-loop     Restart budget and manual reset' \
+	  '  make test-mcp-zombie-soak    Repeated restart/stop/start reaping' \
+	  '  make test-mcp-http-modern    Modern MCP HTTP headers and JSON/SSE' \
+	  '  make test-mcp-http-legacy    Legacy session and GET-stream adapter' \
+	  '  make test-mcp-version-matrix HTTP version/error era selection' \
+	  '  make test-mcp-http-stream    Fragmented SSE and cancellation' \
+	  '  make test-mcp-http-security  URL/auth/redirect/proxy/cache policy' \
 	  '' \
 	  'Milestone gates:' \
 	  '  make gate-m0        Specification and contract scaffold' \
@@ -181,6 +198,8 @@ help:
 	  '  make gate-m5        Gateway HTTP listener and contract' \
 	  '  make gate-m6        Upstream client, Responses/Chat, streaming' \
 	  '  make gate-m7        Routing, health, circuit breaking, fallback' \
+	  '  make gate-m8        MCP stdio process supervision' \
+	  '  make gate-m9        MCP Streamable HTTP and version adapters' \
 	  '' \
 	  'Packaging:' \
 	  '  make package        Create a source archive under dist/'
@@ -513,6 +532,87 @@ gate-m7: gate-m6 test-routing test-routing-parity test-circuit-timeline \
          test-routing-fault-soak valgrind-routing
 	$(PYTHON) scripts/gate_m7.py --build-dir $(BUILD_DIR) --skip-suites
 	@printf 'M7 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M8 targets: MCP stdio process supervision.
+#
+# HARNESS.md names these targets directly.  Each recipe is intentionally a
+# focused set: a modern adapter failure must not be hidden inside a broad
+# lifecycle run, and a crash-budget regression must not require reading past
+# unrelated argv/environment results to find it.
+# ---------------------------------------------------------------------------
+test-mcp-stdio-modern: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_modern_startup_method_sequence \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_invalid_modern_success_without_legacy_fails_before_inventory
+
+test-mcp-stdio-legacy: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_legacy_startup_method_sequence \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_invalid_modern_success_falls_back_without_era_interleave \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_invalid_legacy_success_fails_before_initialized \
+	  tests.test_mcp_process_supervision.McpLegacyProcessResetTests
+
+test-mcp-stdio-malformed: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_mcp_process_supervision.McpMalformedStdioTests \
+	  tests.test_mcp_process_supervision.McpRequiredReadinessTests
+
+test-mcp-process-lifecycle: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_arguments_are_literal_and_never_reach_a_shell \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_environment_is_allowlisted_and_secret_sources_do_not_leak \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_configured_working_directory_is_applied \
+	  tests.test_mcp_process_lifecycle.McpProcessLifecycleTests.test_child_is_gone_after_daemon_shutdown \
+	  tests.test_mcp_process_supervision.McpRequestTimeoutTests
+
+test-mcp-crash-loop: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_mcp_process_supervision.McpCrashLoopTests
+
+test-mcp-zombie-soak: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_mcp_process_supervision.McpZombieSoakTests
+
+valgrind-mcp: build-tests
+	valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite \
+	  --errors-for-leak-kinds=definite --track-origins=yes \
+	  --error-exitcode=99 \
+	  $(DEBUG_DIR)/asmflow-tests --filter mcp/
+
+gate-m8: gate-m7 test-mcp-stdio-modern test-mcp-stdio-legacy \
+         test-mcp-stdio-malformed test-mcp-process-lifecycle \
+         test-mcp-crash-loop test-mcp-zombie-soak valgrind-mcp
+	$(PYTHON) scripts/gate_m8.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M8 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M9 targets: MCP Streamable HTTP and version-isolated adapters.
+#
+# These five targets are the behavioural groups named by HARNESS.md.  The
+# static audit is kept in gate_m9.py; gate-m9 first proves that every M8
+# invariant still holds, then runs each HTTP group and the native MCP memcheck.
+# ---------------------------------------------------------------------------
+test-mcp-http-modern: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_mcp_http_modern
+
+test-mcp-http-legacy: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_mcp_http_legacy
+
+test-mcp-version-matrix: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_mcp_version_matrix
+
+test-mcp-http-stream: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_mcp_http_stream
+
+test-mcp-http-security: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_mcp_http_security
+
+gate-m9: gate-m8 test-mcp-http-modern test-mcp-http-legacy \
+         test-mcp-version-matrix test-mcp-http-stream \
+         test-mcp-http-security valgrind-mcp
+	$(PYTHON) scripts/gate_m9.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M9 gate passed for AsmFlow %s\n' '$(VERSION)'
 
 package: check
 	@mkdir -p dist

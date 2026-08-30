@@ -66,7 +66,7 @@ children are not trusted merely because the operator configured them.
 - no automatic MCP tool calls;
 - no shell execution;
 - remote HTTP rejected unless loopback or explicit private-network exception;
-- redirect disabled or same-origin only;
+- redirect following disabled;
 - bounded request/body/frame/log sizes;
 - bounded concurrency, queue, restart, and retry counts;
 - fallback prohibited after commit;
@@ -113,8 +113,7 @@ Client requests cannot supply upstream URLs. All destinations come from validate
 
 - resolve and connect only to configured origin;
 - reject URL userinfo and fragments;
-- restrict redirect behavior;
-- revalidate redirect target if enabled;
+- disable redirect following;
 - remote provider/MCP uses HTTPS by default;
 - private and link-local ranges require explicit policy where not loopback;
 - Unix socket or file URL schemes are not accepted as HTTP upstreams;
@@ -127,8 +126,8 @@ Controls:
 - strict header/body limits;
 - request timeout, header timeout, idle stream timeout;
 - reject conflicting framing headers;
-- bounded incremental SSE parser;
-- ignore SSE comments; reject oversized events;
+- bounded provider SSE framing and bounded request-scoped MCP SSE event
+  assembly; ignore comments and reject oversized or over-count events;
 - output high/low watermarks;
 - client disconnect cancellation;
 - no cross-provider stream continuation;
@@ -152,31 +151,60 @@ A retry may duplicate billable work. Therefore:
 
 - absolute executable path by default;
 - `execve`-style argument vector, no shell;
-- minimal allowlisted environment;
+- minimal allowlisted environment, never the daemon's full inherited
+  environment;
+- each emitted `NAME=value\0` entry is at most 128 KiB, and the complete owned
+  `envp` allocation, including its pointer array and strings, is at most 1 MiB;
 - explicit cwd;
 - optional UID/GID drop only after design review;
-- process-group ownership for reliable termination;
+- a saved process-group identity for termination even if the direct child is
+  reaped before its helpers;
 - resource limits for files, processes, CPU, address space, and output where feasible;
-- stdout protocol-only; stderr bounded;
+- stdout protocol-only, with strict UTF-8/JSON-RPC and a 4 MiB default / 64 MiB
+  hard frame ceiling applied while a line accumulates;
+- stderr lines have a 64 KiB default / 1 MiB hard ceiling and the captured tail
+  retains only the newest 64 KiB;
+- each validated tools, resources, or prompts inventory is bounded to 1 MiB;
 - restart budget and backoff;
 - operator confirmation for tool calls;
 - tool descriptions and server identity are untrusted display strings;
 - ANSI control sequences in stderr/tool results are escaped before TUI rendering.
 
 A future seccomp or namespace sandbox is desirable but not claimed for 1.0 unless actually implemented and
-tested. Documentation must not imply stronger isolation than exists.
+tested. M8 cleanup covers helpers that remain in the saved PGID; a descendant that deliberately escapes
+with `setsid` or `setpgid` is not contained. Documentation must not imply stronger isolation than exists.
 
 ## 12. MCP HTTP security
 
-- HTTPS by default;
-- auth via SecretRef;
-- header/body protocol version match;
-- modern request metadata required;
-- cache partitioned by server and credential context;
-- no modern session ID or GET stream;
-- request SSE close propagates cancellation;
-- response size and event limits;
-- legacy fallback only on protocol-defined evidence;
+The M9 Streamable HTTP adapter enforces these controls:
+
+- HTTPS is the remote default. Plain HTTP accepts loopback only unless an
+  explicit exception admits a private/link-local IP literal; the exception
+  never admits a public address or hostname.
+- TLS peer and hostname verification remain enabled and cannot be disabled by
+  the plaintext-private-network flag. libcurl is restricted to HTTP(S), does
+  not follow redirects, ignores proxy environment variables, and is not asked
+  to decompress responses automatically.
+- Bearer and custom-header credentials come only from environment SecretRefs.
+  They are resolved while constructing the request, the staging buffer is
+  securely released, and neither the control surface, request body, nor cache
+  retains the secret. The cache keeps only a non-secret change fingerprint.
+- Every modern body carries request metadata matching its outbound
+  `MCP-Protocol-Version`. Duplicate or mismatched response protocol headers and
+  a modern response carrying a session header are protocol failures.
+- The modern adapter physically has no session, GET, DELETE, or
+  `Last-Event-ID` state. A modern timeout closes only that request transfer;
+  legacy timeout cancellation is an explicit session-scoped notification from
+  the separate legacy adapter.
+- Only an unrecognized bodyless HTTP 400 response to modern discovery is
+  legacy evidence. Recognized JSON-RPC errors, redirects, 5xx responses,
+  timeouts, and transport failures never downgrade the adapter.
+- Inventory caches are server-local and authorization-context partitioned,
+  use monotonic bounded TTLs, and replace validated data transactionally.
+- Response headers are capped at 1 MiB, bodies at 64 MiB, individual SSE
+  events at 16 MiB with at most 1024 events, and legacy session/resume values
+  at 4 KiB each; lower defaults apply where documented in the compatibility
+  contract.
 - OAuth/browser authorization is deferred unless separately designed.
 
 ## 13. Configuration and file security
@@ -264,6 +292,8 @@ Diagnostic export includes:
 - env inheritance test;
 - child zombie/crash-loop test;
 - redirect/URL policy test;
+- MCP HTTP plaintext, proxy, SecretRef non-disclosure, authorization-cache
+  partition, and TTL-refresh tests;
 - first-byte fallback invariant test;
 - allocation failure and integer boundary tests;
 - package scan for secrets, DBs, logs, core files, debug paths.
@@ -276,6 +306,11 @@ Diagnostic export includes:
 - reverse proxy misconfiguration can expose the gateway;
 - provider compatibility claims rely on tested protocol subsets;
 - 1.0 does not claim sandbox-grade MCP isolation;
+- MCP descendants that escape the supervised PGID require future cgroup,
+  namespace, or equivalent containment;
+- daemon shutdown is time-bounded and does not wait forever for an
+  uninterruptible `D`-state child; shutdown may return while the kernel still
+  owns such a task until its blocking operation completes;
 - opt-in payload logging creates privacy risk.
 
 These risks must be stated plainly in release documentation.

@@ -108,6 +108,24 @@ url_http_lo:  db "http://127.0.0.1:11434/v1"
 url_http_lo_len equ 25
 url_http_rem: db "http://api.example.com/v1"
 url_http_rem_len equ 25
+url_http_lo6: db "http://[::1]:11434/v1"
+url_http_lo6_len equ $ - url_http_lo6
+url_http_priv10: db "http://10.1.2.3/v1"
+url_http_priv10_len equ $ - url_http_priv10
+url_http_priv172: db "http://172.31.255.254/v1"
+url_http_priv172_len equ $ - url_http_priv172
+url_http_priv192: db "http://192.168.1.2/v1"
+url_http_priv192_len equ $ - url_http_priv192
+url_http_link4: db "http://169.254.169.254/v1"
+url_http_link4_len equ $ - url_http_link4
+url_http_public4: db "http://8.8.8.8/v1"
+url_http_public4_len equ $ - url_http_public4
+url_http_ula6: db "http://[fd12:3456::1]/mcp"
+url_http_ula6_len equ $ - url_http_ula6
+url_http_link6: db "http://[fe80::1]/mcp"
+url_http_link6_len equ $ - url_http_link6
+url_http_public6: db "http://[2001:4860:4860::8888]/mcp"
+url_http_public6_len equ $ - url_http_public6
 url_creds:    db "https://user:pass@api.example.com/v1"
 url_creds_len equ 35
 url_frag:     db "https://api.example.com/v1#x"
@@ -367,13 +385,95 @@ AF_TEST "config/url_policy", 64
         call    af_cfg_url_check
         AF_CHECK_ERR rax, AF_E_CFG_URL, "plain http to a remote host must be refused"
 
-        ; ...unless the operator states the exception explicitly.
+        ; A hostname cannot be authorized by the exception: its DNS answer can
+        ; change after validation.
         lea     rdi, [url_http_rem]
         mov     rsi, url_http_rem_len
         mov     rdx, 1
         xor     ecx, ecx
         call    af_cfg_url_check
-        AF_CHECK_OK rax, "an explicit exception should permit plain http"
+        AF_CHECK_ERR rax, AF_E_CFG_URL, "the exception must not authorize a hostname"
+
+        lea     rdi, [url_http_lo6]
+        mov     rsi, url_http_lo6_len
+        xor     edx, edx
+        lea     rcx, [rsp]
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "bracketed IPv6 loopback should be accepted"
+        mov     rbx, [rsp]
+        AF_CHECK_EQ rbx, 1, "IPv6 loopback should be reported as loopback"
+
+        ; RFC1918 and link-local IPv4 literals require the explicit exception.
+        lea     rdi, [url_http_priv10]
+        mov     rsi, url_http_priv10_len
+        xor     edx, edx
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_ERR rax, AF_E_CFG_URL, "RFC1918 plaintext must require the exception"
+
+        lea     rdi, [url_http_priv10]
+        mov     rsi, url_http_priv10_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "the exception should permit 10/8"
+
+        lea     rdi, [url_http_priv172]
+        mov     rsi, url_http_priv172_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "the exception should permit 172.16/12"
+
+        lea     rdi, [url_http_priv192]
+        mov     rsi, url_http_priv192_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "the exception should permit 192.168/16"
+
+        lea     rdi, [url_http_link4]
+        mov     rsi, url_http_link4_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "the exception should permit IPv4 link-local"
+
+        lea     rdi, [url_http_public4]
+        mov     rsi, url_http_public4_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_ERR rax, AF_E_CFG_URL, "the exception must not authorize public IPv4"
+
+        ; IPv6 ULA and link-local literals follow the same explicit policy.
+        lea     rdi, [url_http_ula6]
+        mov     rsi, url_http_ula6_len
+        xor     edx, edx
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_ERR rax, AF_E_CFG_URL, "IPv6 ULA plaintext must require the exception"
+
+        lea     rdi, [url_http_ula6]
+        mov     rsi, url_http_ula6_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "the exception should permit IPv6 ULA"
+
+        lea     rdi, [url_http_link6]
+        mov     rsi, url_http_link6_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_OK rax, "the exception should permit IPv6 link-local"
+
+        lea     rdi, [url_http_public6]
+        mov     rsi, url_http_public6_len
+        mov     rdx, 1
+        xor     ecx, ecx
+        call    af_cfg_url_check
+        AF_CHECK_ERR rax, AF_E_CFG_URL, "the exception must not authorize public IPv6"
 
         lea     rdi, [url_creds]
         mov     rsi, url_creds_len

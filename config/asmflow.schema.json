@@ -709,6 +709,7 @@
     },
     "mcpStdio": {
       "type": "object",
+      "$comment": "env_allow and env property names must be disjoint. Draft 2020-12 cannot compare dynamic array values with dynamic object keys, so the schema-equivalent reference and NASM validators enforce this cross-field rule.",
       "additionalProperties": false,
       "required": [
         "id",
@@ -746,7 +747,7 @@
         },
         "command": {
           "type": "string",
-          "pattern": "^/",
+          "pattern": "^/[^\\u0000]*$",
           "maxLength": 4096
         },
         "args": {
@@ -754,12 +755,14 @@
           "maxItems": 128,
           "items": {
             "type": "string",
+            "pattern": "^[^\\u0000]*$",
             "maxLength": 4096
           }
         },
         "cwd": {
           "type": "string",
           "minLength": 1,
+          "pattern": "^[^\\u0000]*$",
           "maxLength": 4096
         },
         "env_allow": {

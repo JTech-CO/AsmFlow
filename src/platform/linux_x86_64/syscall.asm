@@ -135,6 +135,7 @@ AF_SYSCALL dup,            SYS_dup,            1
 AF_SYSCALL dup2,           SYS_dup2,           2
 AF_SYSCALL nanosleep,      SYS_nanosleep,      2
 AF_SYSCALL getpid,         SYS_getpid,         0
+AF_SYSCALL getppid,        SYS_getppid,        0
 AF_SYSCALL socket,         SYS_socket,         3
 AF_SYSCALL connect,        SYS_connect,        3
 AF_SYSCALL sendto,         SYS_sendto,         6

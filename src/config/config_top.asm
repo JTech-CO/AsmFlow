@@ -20,6 +20,7 @@
 %include "asmflow.inc"
 %include "json.inc"
 %include "config.inc"
+%include "fileio.inc"
 
         extern af_alloc
         extern af_free
@@ -71,10 +72,6 @@
         extern m_not_object
         extern m_schema_version
         extern m_missing_secret
-
-%define O_RDONLY   0
-%define O_NOFOLLOW 0x20000
-%define O_CLOEXEC  0x80000
 
         section .rodata
 default_config_rel: db "${XDG_CONFIG_HOME}/asmflow/asmflow.json", 0

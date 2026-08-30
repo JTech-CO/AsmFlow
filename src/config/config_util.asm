@@ -22,6 +22,10 @@
         extern af_add_size
         extern getenv
         extern af_sys_getuid
+        extern inet_pton
+
+%define AF_CFG_AF_INET         2
+%define AF_CFG_AF_INET6        10
 
         section .text
 
@@ -399,8 +403,8 @@ af_cfg_is_loopback_host:
 ;   * scheme must be http:// or https://
 ;   * embedded credentials (`user:pass@`) are rejected outright
 ;   * a fragment is rejected
-;   * plain http is accepted only for a loopback host, or with an explicit
-;     allow_insecure_private_http
+;   * plain http is accepted for loopback; an explicit exception admits only
+;     RFC1918/link-local IP literals, never public IPs or hostnames
 ;   * control characters and whitespace anywhere in the URL are rejected
 ;
 ; Client requests can never supply a URL, so this runs only over operator
@@ -409,7 +413,7 @@ af_cfg_is_loopback_host:
 ; ---------------------------------------------------------------------------
         global af_cfg_url_check
 af_cfg_url_check:
-        AF_ENTER 32
+        AF_ENTER 128
         test    rdi, rdi
         jz      .invalid
         test    rsi, rsi
@@ -511,21 +515,139 @@ af_cfg_url_check:
         mov     rsi, [rsp + 24]
         test    rsi, rsi
         jz      .bad_url
-        call    af_cfg_is_loopback_host
-        test    r14, r14
-        jz      .after_loopback
-        mov     [r14], rax
-.after_loopback:
-        mov     [rsp + 8], rax          ; is_loopback
 
-        ; Plain http needs either a loopback host or an explicit exception.
+        ; URL IPv6 literals carry brackets. Remove a matching pair for address
+        ; classification; malformed bracket forms remain non-loopback/non-
+        ; private and therefore cannot authorize plaintext.
+        cmp     rsi, 2
+        jb      .host_unwrapped
+        cmp     byte [rdi], '['
+        jne     .host_unwrapped
+        cmp     byte [rdi + rsi - 1], ']'
+        jne     .host_unwrapped
+        inc     rdi
+        sub     rsi, 2
+        test    rsi, rsi
+        jz      .bad_url
+.host_unwrapped:
+        mov     [rsp + 32], rdi         ; host bytes, BORROWED from url
+        mov     [rsp + 40], rsi         ; host length
+        mov     qword [rsp + 48], 0     ; 0 other, 1 loopback, 2 private/link
+
+        call    af_cfg_is_loopback_host
+        test    rax, rax
+        jnz     .classified_loopback
+
+        ; `inet_pton` is syntax-only. Policy remains here in NASM. A textual
+        ; IP literal is at most 45 bytes (IPv6 with an embedded dotted quad),
+        ; so longer hosts are names and never qualify for insecure plaintext.
+        mov     rdx, [rsp + 40]
+        cmp     rdx, 45
+        ja      .classified
+        lea     rdi, [rsp + 64]
+        mov     rsi, [rsp + 32]
+        call    af_mem_copy
+        mov     rcx, [rsp + 40]
+        mov     byte [rsp + 64 + rcx], 0
+
+        mov     edi, AF_CFG_AF_INET
+        lea     rsi, [rsp + 64]
+        lea     rdx, [rsp + 112]
+        AF_CCALL inet_pton
+        cmp     eax, 1
+        je      .classified_ipv4
+
+        mov     edi, AF_CFG_AF_INET6
+        lea     rsi, [rsp + 64]
+        lea     rdx, [rsp + 112]
+        AF_CCALL inet_pton
+        cmp     eax, 1
+        jne     .classified
+
+        ; ::1 is loopback in every valid textual spelling.
+        cmp     qword [rsp + 112], 0
+        jne     .ipv6_ranges
+        mov     rax, [rsp + 120]
+        mov     rcx, 0x0100000000000000
+        cmp     rax, rcx
+        je      .classified_loopback
+.ipv6_ranges:
+        ; fc00::/7 unique-local.
+        movzx   eax, byte [rsp + 112]
+        and     eax, 0xFE
+        cmp     eax, 0xFC
+        je      .classified_private
+        ; fe80::/10 link-local.
+        cmp     byte [rsp + 112], 0xFE
+        jne     .classified
+        movzx   eax, byte [rsp + 113]
+        and     eax, 0xC0
+        cmp     eax, 0x80
+        je      .classified_private
+        jmp     .classified
+
+.classified_ipv4:
+        ; Preserve the existing URL-loopback contract: 127.0.0.1 exactly.
+        cmp     byte [rsp + 112], 127
+        jne     .ipv4_ranges
+        cmp     byte [rsp + 113], 0
+        jne     .ipv4_ranges
+        cmp     byte [rsp + 114], 0
+        jne     .ipv4_ranges
+        cmp     byte [rsp + 115], 1
+        je      .classified_loopback
+.ipv4_ranges:
+        ; RFC1918 10/8.
+        cmp     byte [rsp + 112], 10
+        je      .classified_private
+        ; RFC1918 172.16/12.
+        cmp     byte [rsp + 112], 172
+        jne     .ipv4_192
+        movzx   eax, byte [rsp + 113]
+        cmp     eax, 16
+        jb      .classified
+        cmp     eax, 31
+        jbe     .classified_private
+        jmp     .classified
+.ipv4_192:
+        ; RFC1918 192.168/16.
+        cmp     byte [rsp + 112], 192
+        jne     .ipv4_link_local
+        cmp     byte [rsp + 113], 168
+        je      .classified_private
+        jmp     .classified
+.ipv4_link_local:
+        ; IPv4 link-local 169.254/16.
+        cmp     byte [rsp + 112], 169
+        jne     .classified
+        cmp     byte [rsp + 113], 254
+        je      .classified_private
+        jmp     .classified
+
+.classified_loopback:
+        mov     qword [rsp + 48], 1
+        jmp     .classified
+.classified_private:
+        mov     qword [rsp + 48], 2
+.classified:
+        test    r14, r14
+        jz      .apply_policy
+        xor     eax, eax
+        cmp     qword [rsp + 48], 1
+        sete    al
+        mov     [r14], rax
+
+.apply_policy:
+        ; HTTPS preserves the existing remote-host policy. Plain HTTP is
+        ; loopback-only unless the explicit exception names a private literal.
         cmp     qword [rsp], 1
         je      .ok
-        cmp     qword [rsp + 8], 0
-        jne     .ok
+        cmp     qword [rsp + 48], 1
+        je      .ok
+        cmp     qword [rsp + 48], 2
+        jne     .bad_url
         test    r13, r13
-        jnz     .ok
-        AF_LEAVE_ERR AF_E_CFG_URL
+        jz      .bad_url
 .ok:
         AF_LEAVE_OK
 .bad_credentials:

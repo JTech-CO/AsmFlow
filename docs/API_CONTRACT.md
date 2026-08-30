@@ -1,8 +1,11 @@
 # AsmFlow API and Control Contract
 
-**Contract version:** `0.1`  
-**Project version:** `0.1.0-spec`  
-**Status:** normative target for the first implementation
+**Contract version:** `0.1`
+
+**Project version:** `0.8.0`
+
+**Status:** normative target; implemented through the M9 MCP Streamable HTTP
+and version-adapter subset
 
 ## 1. Compatibility principles
 
@@ -62,7 +65,7 @@ Successful response:
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "uptime_ms": 42000
 }
 ```
@@ -80,6 +83,10 @@ Reports whether the daemon can accept generation requests.
   "config_revision": 42,
   "database": "ready",
   "listener": "ready",
+  "mcp": {
+    "required": 1,
+    "ready": 1
+  },
   "routes": {
     "enabled": 4,
     "eligible": 3
@@ -91,7 +98,11 @@ Reports whether the daemon can accept generation requests.
 - `503`: config invalid, migration pending/failed, no eligible required route, or shutdown in progress.
 
 MCP server failures do not make the LLM gateway globally unready unless the operator marks a
-specific MCP server as a required startup dependency.
+specific MCP server as a required startup dependency. An enabled required stdio or Streamable
+HTTP server counts as ready only after its protocol era is negotiated and its current,
+semantically validated tools list has committed. Every enabled required server contributes to
+`mcp.required`; every such READY server with current tools contributes to `mcp.ready`. Optional
+MCP failures do not lower global readiness.
 
 ## 4. Models endpoint
 
@@ -453,6 +464,38 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 The daemon rejects `confirmed=false` or missing confirmation. TUI confirmation is not treated as a
 security boundary; the daemon also validates policy and server state.
 
+### MCP control surface in 0.8.0
+
+The nine implemented MCP methods are `mcp.list`, `mcp.get`,
+`mcp.inventory`, `mcp.start`, `mcp.stop`, `mcp.restart`,
+`mcp.reset_crash_loop`, `mcp.discover`, and `mcp.tool_test`. Every method
+other than `mcp.list` requires `params.server_id`.
+
+- `mcp.list` and `mcp.get` join configuration with bounded live state,
+  `transport`, counters, the selected `era`, and nullable `protocol_version`.
+  The negotiated version belongs to one running transport view and becomes
+  null on stop, failure, or restart; it is not inferred from configuration.
+  HTTP servers have no child process, so their `pid` is zero.
+- `mcp.inventory` returns validated `tools`, `resources`, and `prompts`, their
+  counts, `fetched_at_monotonic_ns`, `expires_at_monotonic_ns`, and
+  `cache_scope` (`none`, `private`, or `public`). Tools are the required current
+  inventory. Optional arrays may be null, and a failed optional refresh
+  preserves its prior validated cache. Stdio reports process-lifetime cache
+  metadata with scope `none`; HTTP applies bounded monotonic TTLs and keeps
+  every cache server-local and authorization-context partitioned.
+- `mcp.start`, `mcp.stop`, `mcp.restart`, and `mcp.discover` require
+  `server_id` and initiate bounded asynchronous work. Discovery refuses a
+  second refresh while any list call is still pending. These mutations apply
+  to both transports: stopping or restarting HTTP cancels active POST/GET
+  transfers, and a restart probes modern first again.
+- `mcp.reset_crash_loop` is valid only for a latched `crash_loop` server. It
+  synchronously clears the latch and restart history and places the server on
+  its restart path; it is not a general start alias.
+- `mcp.tool_test` additionally requires `confirmed=true`, a READY server, and a
+  tool name present in the current validated inventory. It queues one bounded
+  asynchronous call; the caller polls `mcp.get.tool_test` for its pending or
+  done status and result.
+
 ## 11. Pagination and filtering
 
 List methods use cursor pagination:
@@ -474,7 +517,9 @@ List methods use cursor pagination:
 ## 12. Contract evolution
 
 - Data-plane compatibility follows endpoint-family expectations and is tested by fixtures.
-- Control protocol uses `protocol_version` in the initial handshake once implemented.
+- Control protocol uses `protocol_version` in the initial handshake once implemented. This future
+  control-plane handshake is distinct from each MCP server's nullable, process-scoped negotiated
+  `protocol_version` already exposed by `mcp.list` and `mcp.get`.
 - Additive response fields are allowed in `0.x`.
 - Removing/renaming a field or changing meaning requires a contract version change and migration note.
 - TUI and daemon versions must negotiate; incompatible versions fail with an actionable message.

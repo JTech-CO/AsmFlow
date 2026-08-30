@@ -113,6 +113,11 @@ const char *af_jsonc_object_iter_key(void *iter)
     return json_object_iter_key(iter);
 }
 
+size_t af_jsonc_object_iter_key_len(void *iter)
+{
+    return json_object_iter_key_len(iter);
+}
+
 json_t *af_jsonc_object_iter_value(void *iter)
 {
     return json_object_iter_value(iter);
