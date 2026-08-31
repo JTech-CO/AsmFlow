@@ -1,0 +1,6 @@
+STATUS NAME            ADAPTER           ACTIVE/MAX LATENCY  CIRCUIT
+[OK]   Local Ollama    openai_dual       1/4        12 ms    closed
+[WARN] Code Fast       openai_responses  2/3        26.5 ms  degraded
+[OPEN] Vision Remote   openai_chat       0/2        93 ms    open
+[OFF]  Disabled Lab    openai_dual       0/1        -        disabled
+[WARN] Half Open Probe openai_responses  1/1        40 ms    half-open

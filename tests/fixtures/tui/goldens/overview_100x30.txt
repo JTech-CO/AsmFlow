@@ -1,0 +1,18 @@
+AsmFlow [CONNECTED]  cfg:42  req:18  mcp:3/4                                      <TIME UTC>
+Overview  Providers  Routes  Requests  MCP  Logs  Settings
+OVERVIEW
+Gateway       [OK] READY
+Providers     1 healthy / 2 warning / 1 open / 1 disabled
+MCP servers   1 ready / 1 starting / 1 crash-loop / 1 stopped
+
+ROUTES
+STATUS ALIAS       POLICY          ELIGIBLE ACTIVE LAST SELECTED
+[OK]   general     priority        2/2      1      p-local
+[WARN] code-fast   least_latency   1/2      2      p-code
+[OPEN] vision      priority        0/2      0      -
+
+RECENT EVENTS
+[OPEN] Vision Remote circuit opened 3 times. Open Providers to inspect state.
+[FAIL] Git Legacy is paused in a crash loop. Open MCP to inspect state.
+
+r refresh   : commands   ? help   q quit

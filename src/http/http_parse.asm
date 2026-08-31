@@ -33,7 +33,7 @@
 %include "http.inc"
 
         extern af_buf_append
-        extern af_buf_clear
+        extern af_buf_clear_secure
         extern af_buf_data
         extern af_buf_len
         extern af_buf_append_byte
@@ -348,17 +348,17 @@ af_http_reset_message:
         mov     rbx, rdi
 
         lea     rdi, [rbx + HC_TARGET]
-        call    af_buf_clear
+        call    af_buf_clear_secure
         lea     rdi, [rbx + HC_NAME]
-        call    af_buf_clear
+        call    af_buf_clear_secure
         lea     rdi, [rbx + HC_VALUE]
-        call    af_buf_clear
+        call    af_buf_clear_secure
         lea     rdi, [rbx + HC_BODY]
-        call    af_buf_clear
+        call    af_buf_clear_secure
         lea     rdi, [rbx + HC_AUTH]
-        call    af_buf_clear
+        call    af_buf_clear_secure
         lea     rdi, [rbx + HC_CTYPE]
-        call    af_buf_clear
+        call    af_buf_clear_secure
 
         mov     qword [rbx + HC_METHOD], 0
         mov     qword [rbx + HC_ENDPOINT], AF_EP_UNKNOWN
@@ -416,9 +416,9 @@ af_http_cb_header_field:
         test    rax, rax
         jz      .append
         lea     rdi, [rbx + HC_NAME]
-        call    af_buf_clear
+        call    af_buf_clear_secure
         lea     rdi, [rbx + HC_VALUE]
-        call    af_buf_clear
+        call    af_buf_clear_secure
 .append:
         lea     rdi, [rbx + HC_NAME]
         mov     rsi, [rsp]

@@ -12,7 +12,19 @@ Default path:
 ${XDG_CONFIG_HOME:-$HOME/.config}/asmflow/asmflow.json
 ```
 
-Recommended mode: `0600`; parent directory: `0700`.
+The immediate parent directory must be owned by the daemon user with mode exactly
+`0700`. The file must be an owner-readable regular file owned by that user, with no
+group/world permission bits (`0400` or `0600` are the normal choices). Symlinks, FIFOs,
+device nodes, unsafe modes, and different owners are rejected before parsing; the daemon
+does not broaden or silently repair an existing object.
+
+For example:
+
+```bash
+install -d -m 0700 "${XDG_CONFIG_HOME:-$HOME/.config}/asmflow"
+install -m 0600 examples/asmflow.minimal.json \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/asmflow/asmflow.json"
+```
 
 CLI override:
 
@@ -125,6 +137,12 @@ command substitution, and `~user` expansion are forbidden.
 
 `store_payloads` defaults to false. Enabling it requires an explicit warning in TUI and documentation;
 even then Authorization and secret headers remain excluded.
+
+The database's immediate parent is created as `0700` when absent. An existing parent
+must already be owned by the daemon user with mode exactly `0700`; it is never repaired.
+An existing database must be an owner-readable/writable regular file with no group/world
+permission bits and must not be a symlink. New database, WAL, and SHM files are created
+under a process-wide `0077` umask (normally mode `0600`).
 
 ## 7. Logging
 
@@ -374,6 +392,8 @@ Any failure before publish leaves the old snapshot untouched.
 
 - `schema_version` is an integer.
 - Unknown future versions are rejected with an upgrade message.
-- Migration tools create a backup before rewriting user configuration.
+- Upgrade tooling must use the bounded verified backup/restore primitives before a
+  destructive migration; M11 provides those Assembly storage primitives, while the M12
+  packaging/upgrade workflow is responsible for invoking them.
 - Automatic destructive migration is forbidden.
 - Examples always target the newest schema.

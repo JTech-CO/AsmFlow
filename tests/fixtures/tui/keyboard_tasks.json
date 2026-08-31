@@ -1,0 +1,27 @@
+{
+  "workflow": [
+    {"keys": "2", "expect_screen": "PROVIDERS"},
+    {"keys": "j", "expect_request": {"method": "providers.get", "params": {"provider_id": "p-code"}}},
+    {"keys": "r", "expect_request": {"method": "providers.list"}},
+    {"keys": "3", "expect_screen": "ROUTES"},
+    {"keys": "5", "expect_screen": "MCP"},
+    {"keys": ":mcp-restart\n", "expect_screen": "CONFIRM"},
+    {"keys": "\n", "expect_request": {"method": "mcp.restart", "params": {"server_id": "m-files"}}},
+    {"keys": "6", "expect_screen": "LOGS"},
+    {"keys": "q", "expect_exit": 0}
+  ],
+  "risk_actions": [
+    {"id": "provider.enable", "level": 2, "available": false, "confirmation": "dialog"},
+    {"id": "provider.disable", "level": 2, "available": false, "confirmation": "dialog"},
+    {"id": "mcp.start", "level": 2, "available": false, "confirmation": "dialog"},
+    {"id": "mcp.stop", "level": 2, "available": false, "confirmation": "dialog"},
+    {"id": "mcp.restart", "level": 2, "available": true, "confirmation": "dialog"},
+    {"id": "mcp.reset_crash_loop", "level": 2, "available": false, "confirmation": "dialog"},
+    {"id": "config.reload", "level": 2, "available": false, "confirmation": "dialog"},
+    {"id": "mcp.tool_test", "level": 3, "available": false, "confirmation": "target_and_arguments"},
+    {"id": "route.mutate", "level": 3, "available": false, "confirmation": "target_and_impact"},
+    {"id": "listener.non_loopback", "level": 3, "available": false, "confirmation": "target_and_impact"},
+    {"id": "mcp.stop_many", "level": 4, "available": false, "confirmation": "typed_phrase_or_unavailable"},
+    {"id": "database.reset", "level": 4, "available": false, "confirmation": "unavailable"}
+  ]
+}

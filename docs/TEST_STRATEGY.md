@@ -130,6 +130,12 @@ Fuzz targets:
 
 A fuzz input within configured maximum that crashes, hangs, or causes unbounded allocation is a defect.
 
+The M11 smoke campaign is deterministic and committed. It covers all eight targets
+above, limits each generated input to 8 KiB, and runs every case in a fresh native test
+process with a four-second timeout, disabled core dumps, CPU/address-space limits, and
+bounded output capture. The default fixed seed runs 144 isolated cases; failures report
+the target, seed, length, SHA-256, and a bounded hex prefix for exact reproduction.
+
 ### Layer J — TUI tests
 
 - pseudo-terminal keyboard scripts;
@@ -176,6 +182,9 @@ Soak profiles:
 | bounded input | boundary-1, boundary, boundary+1 for every limit |
 | control socket protection | mode/owner/unauthorized client tests |
 | config reload atomicity | invalid reload leaves hash/revision/state unchanged |
+| coherent backup/restore | provider, route, MCP, setting, and operator metadata match after verified restore |
+| ordered graceful shutdown | accepts stop, in-flight drain/deadline, MCP stop, then DB close markers |
+| crash recovery | SIGKILL leaves WAL/stale UDS; next daemon recovers before Python opens SQLite |
 
 ## 4. Test data policy
 
@@ -189,7 +198,7 @@ Soak profiles:
 
 ## 5. CI stages
 
-Planned:
+Implemented through M11:
 
 1. repository validation;
 2. debug build;
@@ -200,9 +209,11 @@ Planned:
 7. MCP matrix;
 8. TUI PTY tests;
 9. Valgrind selected suites;
-10. package verification.
+10. security, redaction, permissions, fuzz, backup, and signal/crash recovery;
+11. package verification (M12).
 
-Long soak and fuzz campaigns run on scheduled or release workflows, not every pull request.
+The bounded deterministic fuzz smoke runs in the M11 gate. Longer coverage-guided fuzz
+and soak campaigns remain scheduled or release workflows rather than every pull request.
 
 ## 6. Failure triage
 
@@ -219,11 +230,13 @@ For each failure record:
 
 Do not rerun until green without understanding flaky behavior. A flaky test is a failing test.
 
-## 7. Current scaffold tests
+## 7. Current test entry points
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 scripts/validate_repo.py
+make check
+make gate-m11
 ```
 
-These tests validate contracts only and do not claim runtime functionality.
+`make check` is the buildless repository/contract gate. `make gate-m11` builds the
+binaries, runs all preceding milestone gates, the focused M11 suites, Valgrind coverage,
+and the M11 structural audit.

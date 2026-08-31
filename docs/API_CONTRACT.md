@@ -2,10 +2,9 @@
 
 **Contract version:** `0.1`
 
-**Project version:** `0.8.0`
+**Project version:** `0.10.0`
 
-**Status:** normative target; implemented through the M9 MCP Streamable HTTP
-and version-adapter subset
+**Status:** normative contract; implemented through M11 security, observability, and recovery
 
 ## 1. Compatibility principles
 
@@ -65,7 +64,7 @@ Successful response:
 ```json
 {
   "status": "ok",
-  "version": "0.8.0",
+  "version": "0.10.0",
   "uptime_ms": 42000
 }
 ```
@@ -363,6 +362,24 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 - Request and response correlate by `id`.
 - Server events use `event` and have no request `id`.
 
+### Client compatibility preflight
+
+`system.version` returns `version`, `target`, `build`, and the integer
+control `protocol_version`. The implemented control protocol version is
+`1`.
+
+A long-lived interactive client sends `system.version` as its first request
+and must receive an `ok: true` response with `result.protocol_version == 1`
+before requesting a snapshot or enabling commands. `asmflow-tui` follows this
+rule. A missing, malformed, or different value is an incompatible protocol:
+the client shows an actionable error and sends no mutation.
+
+`asmflowctl` is deliberately a one-request client. Scripts that need a
+compatibility preflight call `asmflowctl --json system.version`, require
+`result.protocol_version == 1`, and only then issue another command. This
+control version is distinct from the nullable, process-scoped MCP
+`protocol_version` exposed by `mcp.list` and `mcp.get`.
+
 ### Request envelope
 
 ```json
@@ -419,7 +436,8 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 ### Read methods
 
 - `system.snapshot`
-- `system.version`
+- `system.version` — product/build identity and control
+  `protocol_version` (currently `1`).
 - `providers.list` — configuration plus live state: `health`,
   `active_requests`, `observed_latency_us`, `consecutive_failures`, and
   `circuit_opened_count`. A provider nothing has yet tried reports `healthy`
@@ -435,6 +453,21 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 - `logs.tail`
 - `config.validate`
 - `config.current`
+- `diagnostics.export`
+
+The config_hash fields in config.current, diagnostics.export, and its redacted
+config view are the same canonical unsigned decimal string. The value is an
+opaque revision identifier: clients compare the string exactly and do not
+coerce it to a JSON number. A string preserves the complete 64-bit hash domain
+across consumers whose JSON integer model is limited to signed 64-bit.
+
+`diagnostics.export` accepts an empty object and returns one bounded, redacted
+reproduction snapshot. It includes `format_version`, generation time, product version,
+target/build/control protocol, the canonical `config_hash`, schema version, readiness
+and shutdown state, the last normalized error/status time, dependency versions, the
+redacted config view, and live provider/route/MCP metadata. The response always states
+`redacted: true`, `payloads_included: false`, and `secrets_included: false`; no request
+parameter enables payload or secret inclusion.
 
 ### Mutation methods
 
@@ -448,7 +481,31 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 - `mcp.reset_crash_loop`
 - `mcp.discover`
 - `mcp.tool_test`
-- `diagnostics.export`
+
+Every implemented provider or MCP mutation appends a best-effort `audit_events` row
+containing only occurrence time, peer UID/PID, a static action name, static outcome, and
+normalized status. Parameters, payloads, tool arguments/results, credentials, and
+environment values are not audit columns.
+
+### Operator command confirmation
+
+The TUI classifies actions by operator risk before it emits a control frame:
+
+- Levels 0 and 1 are read-only or low-impact actions and do not open a
+  confirmation dialog.
+- Levels 2 and 3 require an explicit confirmation. Cancelling with Escape sends
+  no request.
+- Level 4 actions are unavailable in this build.
+
+The M10 command palette currently exposes `mcp.restart` as its mutation
+workflow. Other catalogue entries establish risk and confirmation policy for
+future interactive commands; their presence does not claim that each command
+is already exposed by the TUI.
+
+This client-side confirmation is not a security boundary. The daemon still
+checks authorization, method-specific policy, parameters, and current state.
+Methods whose wire contract includes `confirmed=true`, such as
+`mcp.tool_test`, reject a missing or false value independently.
 
 `mcp.tool_test` requires:
 
@@ -464,7 +521,7 @@ ${XDG_RUNTIME_DIR}/asmflow/control.sock
 The daemon rejects `confirmed=false` or missing confirmation. TUI confirmation is not treated as a
 security boundary; the daemon also validates policy and server state.
 
-### MCP control surface in 0.8.0
+### Current MCP control surface
 
 The nine implemented MCP methods are `mcp.list`, `mcp.get`,
 `mcp.inventory`, `mcp.start`, `mcp.stop`, `mcp.restart`,
@@ -496,6 +553,59 @@ other than `mcp.list` requires `params.server_id`.
   asynchronous call; the caller polls `mcp.get.tool_test` for its pending or
   done status and result.
 
+### `asmflowctl` output and exit contract
+
+```text
+asmflowctl [--socket PATH] [--json|--table] METHOD [PARAMS_JSON]
+```
+
+`PARAMS_JSON`, when present, must be a bounded JSON object and is validated
+before a socket connection is attempted. Table mode is the default:
+`system.version`, `system.snapshot`, `providers.list`, `routes.list`, and
+`mcp.list` have deterministic human-readable schemas. Daemon errors use a
+stable status/code/message/field table. Methods without a specialized table
+fall back to the complete JSON envelope. Output contains no ANSI colour or raw
+terminal control byte.
+
+In `--json` mode, stdout is the daemon's complete correlated response
+envelope, including additive top-level and result fields, serialized as exactly
+one JSON line followed by LF. A daemon error remains a full `ok: false`
+envelope on stdout. Connection, framing, correlation, parsing, and write
+failures produce no partial JSON envelope and report an actionable diagnostic
+on stderr.
+
+Exit codes are stable:
+
+- `0`: a valid correlated response with `ok: true`;
+- `1`: `ok: false`, connection failure, invalid control response, or output
+  failure;
+- `2`: local command-line, socket-path, method, or `PARAMS_JSON` usage error.
+
+### `asmflow-tui` state contract
+
+The TUI has Overview, Providers, Routes, Requests, MCP, Logs, and Settings
+screens. It obtains state only through the control socket and never opens
+SQLite. Requests and Logs are explicit unavailable states in this build:
+their screens show `UNAVAILABLE` and `unsupported_in_this_build` rather than
+inventing rows or exposing payloads.
+
+The default screens do not display secrets, prompts, or model responses.
+Remote text is UTF-8 validated and terminal control bytes are rendered as
+visible text. Providers refresh resolves the focused provider by stable ID
+across reordering; if the ID was removed, selection falls back
+deterministically.
+
+If the initial connection or compatibility preflight fails, the client exits
+with status 1 and an actionable stderr diagnostic before entering curses.
+Once a session has loaded valid frames, composite Overview and Providers
+refreshes stage their bounded responses before commit. A failed response,
+validation, or provider-detail lookup restores the previous frames and
+Provider/Route stable-ID selections as `STALE`; a closed control connection is
+shown as `DISCONNECTED`. Neither state may send a mutation, and `r` retries the
+same socket path. Quit, SIGINT, SIGHUP, and ncurses presentation errors use the
+same cleanup path, and exiting after a daemon disconnect restores terminal
+echo, cursor, and screen state.
+
 ## 11. Pagination and filtering
 
 List methods use cursor pagination:
@@ -517,9 +627,10 @@ List methods use cursor pagination:
 ## 12. Contract evolution
 
 - Data-plane compatibility follows endpoint-family expectations and is tested by fixtures.
-- Control protocol uses `protocol_version` in the initial handshake once implemented. This future
-  control-plane handshake is distinct from each MCP server's nullable, process-scoped negotiated
-  `protocol_version` already exposed by `mcp.list` and `mcp.get`.
+- Long-lived control clients require `protocol_version == 1` during the
+  `system.version` preflight. This control-plane version is distinct from each
+  MCP server's nullable, process-scoped negotiated `protocol_version`.
 - Additive response fields are allowed in `0.x`.
 - Removing/renaming a field or changing meaning requires a contract version change and migration note.
-- TUI and daemon versions must negotiate; incompatible versions fail with an actionable message.
+- Incompatible control versions fail with an actionable message before a
+  snapshot or mutation is requested.

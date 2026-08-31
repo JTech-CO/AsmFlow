@@ -297,21 +297,49 @@ def git_recorded_modes() -> dict[str, int] | None:
         )
     except OSError:
         return None
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0:
         return None
     modes: dict[str, int] = {}
     for line in result.stdout.splitlines():
         fields = line.split(maxsplit=3)
         if len(fields) == 4:
             modes[fields[3].strip()] = int(fields[0], 8)
-    return modes or None
+    return modes
+
+
+def git_untracked_paths() -> set[str] | None:
+    """Return unignored working-tree paths, or None outside a work tree."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "--",
+                "scripts",
+                "examples",
+                "tests",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 def check_scripts() -> None:
     """Anything carrying a shebang must be executable.
 
     Deriving the list from the shebang rather than from a hard-coded list means
-    a new gate script cannot be added without its bit.
+    a new gate script cannot be added without its bit. Tracked scripts use the
+    index mode; an untracked, unignored script uses its working-tree mode so the
+    repository gate can run before the milestone change is committed.
     """
     candidates = sorted(
         list(ROOT.glob("scripts/*.py"))
@@ -322,19 +350,23 @@ def check_scripts() -> None:
     if not candidates:
         fail("no scripts were found to check")
     recorded = git_recorded_modes()
+    untracked = git_untracked_paths() if recorded is not None else None
     for path in candidates:
         if path.read_bytes()[:2] != b"#!":
             continue
         relative = path.relative_to(ROOT).as_posix()
-        if recorded is not None:
-            if relative not in recorded:
-                fail(f"script is not tracked by git: {relative}")
+        if recorded is not None and relative in recorded:
             if not recorded[relative] & 0o111:
                 fail(
                     f"script is not executable in the git index: {relative} "
                     f"(fix with: git update-index --chmod=+x {relative})"
                 )
             continue
+        if recorded is not None and (untracked is None or relative not in untracked):
+            fail(
+                "script is neither tracked nor an unignored working-tree file: "
+                f"{relative}"
+            )
         if not path.stat().st_mode & stat.S_IXUSR:
             fail(f"script is not executable: {relative}")
 

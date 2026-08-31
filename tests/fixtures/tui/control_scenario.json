@@ -1,0 +1,378 @@
+{
+  "methods": {
+    "system.version": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "version": "0.8.0",
+          "target": "linux-x86_64",
+          "build": "debug",
+          "protocol_version": 1
+        }
+      }
+    },
+    "system.snapshot": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "revision": 42,
+          "ready": true,
+          "uptime_ms": 3723000,
+          "counts": {
+            "providers": 5,
+            "routes": 3,
+            "mcp_servers": 4,
+            "requests": 18,
+            "connections": 2
+          }
+        }
+      }
+    },
+    "providers.list": {
+      "sequence": [
+        {
+          "ok": true,
+          "result": [
+            {
+              "id": "p-local",
+              "display_name": "Local Ollama",
+              "adapter": "openai_dual",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "healthy",
+              "active_requests": 1,
+              "max_concurrency": 4,
+              "observed_latency_us": 12000,
+              "consecutive_failures": 0,
+              "circuit_opened_count": 0
+            },
+            {
+              "id": "p-code",
+              "display_name": "Code Fast",
+              "adapter": "openai_responses",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "degraded",
+              "active_requests": 2,
+              "max_concurrency": 3,
+              "observed_latency_us": 26500,
+              "consecutive_failures": 2,
+              "circuit_opened_count": 0
+            },
+            {
+              "id": "p-vision",
+              "display_name": "Vision Remote",
+              "adapter": "openai_chat",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "open",
+              "active_requests": 0,
+              "max_concurrency": 2,
+              "observed_latency_us": 93000,
+              "consecutive_failures": 5,
+              "circuit_opened_count": 3
+            },
+            {
+              "id": "p-off",
+              "display_name": "Disabled Lab",
+              "adapter": "openai_dual",
+              "enabled": true,
+              "operator_disabled": true,
+              "health": "disabled",
+              "active_requests": 0,
+              "max_concurrency": 1,
+              "observed_latency_us": 0,
+              "consecutive_failures": 0,
+              "circuit_opened_count": 0
+            },
+            {
+              "id": "p-probe",
+              "display_name": "Half Open Probe",
+              "adapter": "openai_responses",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "half_open",
+              "active_requests": 1,
+              "max_concurrency": 1,
+              "observed_latency_us": 40000,
+              "consecutive_failures": 4,
+              "circuit_opened_count": 2
+            }
+          ]
+        },
+        {
+          "ok": true,
+          "result": [
+            {
+              "id": "p-probe",
+              "display_name": "Half Open Probe",
+              "adapter": "openai_responses",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "half_open",
+              "active_requests": 1,
+              "max_concurrency": 1,
+              "observed_latency_us": 40000,
+              "consecutive_failures": 4,
+              "circuit_opened_count": 2
+            },
+            {
+              "id": "p-vision",
+              "display_name": "Vision Remote",
+              "adapter": "openai_chat",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "open",
+              "active_requests": 0,
+              "max_concurrency": 2,
+              "observed_latency_us": 93000,
+              "consecutive_failures": 5,
+              "circuit_opened_count": 3
+            },
+            {
+              "id": "p-code",
+              "display_name": "Code Fast",
+              "adapter": "openai_responses",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "degraded",
+              "active_requests": 2,
+              "max_concurrency": 3,
+              "observed_latency_us": 26500,
+              "consecutive_failures": 1,
+              "circuit_opened_count": 0
+            },
+            {
+              "id": "p-local",
+              "display_name": "Local Ollama",
+              "adapter": "openai_dual",
+              "enabled": true,
+              "operator_disabled": false,
+              "health": "healthy",
+              "active_requests": 1,
+              "max_concurrency": 4,
+              "observed_latency_us": 11800,
+              "consecutive_failures": 0,
+              "circuit_opened_count": 0
+            },
+            {
+              "id": "p-off",
+              "display_name": "Disabled Lab",
+              "adapter": "openai_dual",
+              "enabled": true,
+              "operator_disabled": true,
+              "health": "disabled",
+              "active_requests": 0,
+              "max_concurrency": 1,
+              "observed_latency_us": 0,
+              "consecutive_failures": 0,
+              "circuit_opened_count": 0
+            }
+          ]
+        }
+      ]
+    },
+    "providers.get": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "id": "p-code",
+          "display_name": "Code Fast",
+          "adapter": "openai_responses",
+          "health": "degraded",
+          "active_requests": 2,
+          "max_concurrency": 3,
+          "observed_latency_us": 26500,
+          "consecutive_failures": 1,
+          "circuit_opened_count": 0
+        }
+      }
+    },
+    "routes.list": {
+      "reply": {
+        "ok": true,
+        "result": [
+          {
+            "id": "r-general",
+            "model_alias": "general",
+            "policy": "priority",
+            "target_count": 2,
+            "eligible_count": 2,
+            "active_requests": 1,
+            "fallback": {"max_attempts": 2},
+            "last_selected": "p-local"
+          },
+          {
+            "id": "r-code",
+            "model_alias": "code-fast",
+            "policy": "least_latency",
+            "target_count": 2,
+            "eligible_count": 1,
+            "active_requests": 2,
+            "fallback": {"max_attempts": 2},
+            "last_selected": "p-code"
+          },
+          {
+            "id": "r-vision",
+            "model_alias": "vision",
+            "policy": "priority",
+            "target_count": 2,
+            "eligible_count": 0,
+            "active_requests": 0,
+            "fallback": {"max_attempts": 1},
+            "last_selected": null
+          }
+        ]
+      }
+    },
+    "routes.get": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "id": "r-code",
+          "model_alias": "code-fast",
+          "policy": "least_latency",
+          "targets": [
+            {"provider_id": "p-code", "priority": 0},
+            {"provider_id": "p-local", "priority": 1}
+          ],
+          "fallback": {"max_attempts": 2}
+        }
+      }
+    },
+    "mcp.list": {
+      "reply": {
+        "ok": true,
+        "result": [
+          {
+            "id": "m-files",
+            "display_name": "Filesystem",
+            "transport": "stdio",
+            "state": "ready",
+            "era": "modern_2026",
+            "protocol_version": "2026-07-28",
+            "tool_count": 4,
+            "resource_count": 2,
+            "restarts": 0
+          },
+          {
+            "id": "m-git",
+            "display_name": "Git Legacy",
+            "transport": "stdio",
+            "state": "crash_loop",
+            "era": "legacy_2025",
+            "protocol_version": "2025-11-25",
+            "tool_count": 0,
+            "resource_count": 0,
+            "restarts": 3
+          },
+          {
+            "id": "m-http",
+            "display_name": "Remote Search",
+            "transport": "streamable_http",
+            "state": "starting",
+            "era": "modern_2026",
+            "protocol_version": "2026-07-28",
+            "tool_count": 0,
+            "resource_count": 0,
+            "restarts": 1
+          },
+          {
+            "id": "m-off",
+            "display_name": "Stopped Lab",
+            "transport": "stdio",
+            "state": "stopped",
+            "era": "unknown",
+            "protocol_version": null,
+            "tool_count": 0,
+            "resource_count": 0,
+            "restarts": 0
+          }
+        ]
+      }
+    },
+    "mcp.get": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "id": "m-files",
+          "display_name": "Filesystem",
+          "transport": "stdio",
+          "state": "ready",
+          "era": "modern_2026",
+          "protocol_version": "2026-07-28",
+          "tool_count": 4,
+          "resource_count": 2,
+          "restarts": 0
+        }
+      }
+    },
+    "mcp.inventory": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "server_id": "m-files",
+          "tools": [
+            {"name": "read_file", "description": "Read a synthetic test file"}
+          ],
+          "resources": [],
+          "prompts": [],
+          "tool_count": 1,
+          "resource_count": 0,
+          "prompt_count": 0,
+          "cache_scope": "none"
+        }
+      }
+    },
+    "config.current": {
+      "reply": {
+        "ok": true,
+        "result": {
+          "revision": 42,
+          "config_path": "/tmp/asmflow-test/asmflow.json",
+          "listener": {"host": "127.0.0.1", "port": 8080, "loopback": true},
+          "storage": {"schema_version": 1, "store_payloads": false},
+          "auth": {"type": "bearer_env", "secret_present": true}
+        }
+      }
+    },
+    "requests.list": {
+      "reply": {
+        "ok": false,
+        "error": {
+          "code": "unsupported_in_this_build",
+          "message": "Request history is not available in this build.",
+          "field": "method"
+        }
+      }
+    },
+    "logs.tail": {
+      "reply": {
+        "ok": false,
+        "error": {
+          "code": "unsupported_in_this_build",
+          "message": "Log streaming is not available in this build.",
+          "field": "method"
+        }
+      }
+    },
+    "mcp.restart": {
+      "reply": {
+        "ok": true,
+        "result": {"server_id": "m-files", "state": "restarting", "queued": true}
+      }
+    },
+    "mcp.tool_test": {
+      "reply": {
+        "ok": true,
+        "result": {"server_id": "m-files", "request_id": 7, "queued": true}
+      }
+    },
+    "provider.disable": {
+      "reply": {
+        "ok": true,
+        "result": {"provider_id": "p-code", "operator_disabled": true}
+      }
+    }
+  }
+}

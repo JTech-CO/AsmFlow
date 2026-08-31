@@ -1,0 +1,7 @@
+[
+  {"method": "system.version", "params": null, "result_keys": ["version", "target", "build", "protocol_version"]},
+  {"method": "system.snapshot", "params": {}, "result_keys": ["revision", "ready", "counts"]},
+  {"method": "providers.list", "params": {}, "result_type": "list"},
+  {"method": "routes.get", "params": {"route_id": "r-code"}, "result_keys": ["id", "model_alias", "policy", "targets"]},
+  {"method": "mcp.get", "params": {"server_id": "m-files"}, "result_keys": ["id", "state", "era"]}
+]

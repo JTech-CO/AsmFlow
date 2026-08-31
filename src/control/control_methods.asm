@@ -29,6 +29,7 @@
 %include "mcp.inc"
 
         extern af_cstr_len
+        extern af_u64_to_dec
         extern af_mem_eq
         extern af_monotonic_ns
         extern af_realtime_ms
@@ -91,6 +92,9 @@
         extern af_version_str
         extern af_build_target_str
         extern af_build_mode_str
+        extern af_curl_version
+        extern af_sqlitec_libversion
+        extern jansson_version_str
 
         extern af_repo_provider_count
         extern af_repo_route_count
@@ -98,6 +102,7 @@
         extern af_repo_request_count
         extern af_repo_get_operator_disabled
         extern af_repo_set_operator_disabled
+        extern af_repo_record_audit
         extern af_repo_adapter_name
         extern af_repo_policy_name
         extern af_repo_transport_name
@@ -238,6 +243,19 @@ k_error_code:     db "error_code", 0
 k_tool_test:      db "tool_test", 0
 k_name:           db "name", 0
 k_meta:           db "_meta", 0
+k_format_version: db "format_version", 0
+k_generated_at_ms: db "generated_at_ms", 0
+k_shutting_down:  db "shutting_down", 0
+k_last_error:     db "last_error", 0
+k_at_ms:          db "at_ms", 0
+k_dependencies:   db "dependencies", 0
+k_curl:           db "curl", 0
+k_sqlite:         db "sqlite", 0
+k_jansson:        db "jansson", 0
+k_redacted:       db "redacted", 0
+k_payloads_included: db "payloads_included", 0
+k_secrets_included: db "secrets_included", 0
+k_config_current: db "config", 0
 
 v_unknown:        db "unknown", 0
 v_modern_2026:    db "modern_2026", 0
@@ -262,6 +280,8 @@ v_closed:           db "closed", 0
 v_none:             db "none", 0
 v_bearer_env:       db "bearer_env", 0
 v_header_env:       db "header_env", 0
+v_audit_success:    db "success", 0
+v_audit_failure:    db "failure", 0
 
 cap_responses:  db "responses", 0
 cap_chat:       db "chat_completions", 0
@@ -278,6 +298,12 @@ tbl_cap_names:
         align 8
 tbl_auth_names:
         dq v_none, v_bearer_env, v_header_env
+        align 8
+tbl_mutating_methods:
+        dq n_provider_enable, n_provider_disable
+        dq n_mcp_start, n_mcp_stop, n_mcp_restart, n_mcp_reset_loop
+        dq n_mcp_discover, n_mcp_tool_test
+        dq 0
 
 ; The method table: {name, handler}. A NULL handler means the method is part of
 ; the contract but its subsystem is not built yet, which the dispatcher turns
@@ -310,10 +336,40 @@ af_ctl_methods:
         dq n_mcp_reset_loop,  af_ctl_m_mcp_reset_loop
         dq n_mcp_discover,    af_ctl_m_mcp_discover
         dq n_mcp_tool_test,   af_ctl_m_mcp_tool_test
-        dq n_diagnostics,     0
+        dq n_diagnostics,     af_ctl_m_diagnostics_export
         dq 0, 0
 
         section .text
+
+; ---------------------------------------------------------------------------
+; af_ctl_write_config_hash(af_json_writer *writer, u64 hash) -> af_status
+;
+; A configuration hash spans the complete unsigned 64-bit domain. Jansson,
+; which validates every console response before presentation, accepts JSON
+; integers only through signed 64-bit. The wire representation is therefore
+; the canonical base-10 string: exact and parseable for every hash. `writer`
+; is BORROWED and the temporary decimal span is stack-owned.
+; ---------------------------------------------------------------------------
+af_ctl_write_config_hash:
+        AF_ENTER 32
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     rdi, r12
+        lea     rsi, [rsp]
+        mov     rdx, 20
+        lea     rcx, [rsp + 24]
+        call    af_u64_to_dec
+        test    rax, rax
+        js      .done
+        mov     rdi, rbx
+        lea     rsi, [k_config_hash]
+        call    af_jw_key
+        mov     rdi, rbx
+        lea     rsi, [rsp]
+        mov     rdx, [rsp + 24]
+        call    af_jw_string_n
+.done:
+        AF_LEAVE
 
 ; ---------------------------------------------------------------------------
 ; af_ctl_method_lookup(const char *name, u64 len) -> const void * (table entry)
@@ -382,6 +438,15 @@ af_ctl_method_invoke:
         call    r15
         mov     [rsp + 104], rax
 
+        ; Audit is deliberately best-effort: a storage observability failure
+        ; cannot turn a completed operator action into a reported failure.  The
+        ; repository stores only the static method/outcome names, peer numbers,
+        ; normalized status, and time — never params or payloads.
+        mov     rdi, rbx
+        mov     rsi, r12
+        mov     rdx, [rsp + 104]
+        call    af_ctl_record_audit
+
         ; A handler that reported a specific failure replaces the whole frame
         ; with an error, rather than shipping a half-written result.
         cmp     qword [rsp + 104], 0
@@ -394,6 +459,24 @@ af_ctl_method_invoke:
         AF_LEAVE
 
 .handler_failed:
+        ; Preserve only the normalized status and its time.  Request params,
+        ; payload bytes, provider text, and submitted credentials are never
+        ; copied into runtime diagnostics.
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        test    rax, rax
+        jz      .error_recorded
+        mov     rcx, [rsp + 104]
+        mov     [rax + RT_LAST_ERROR], rcx
+        mov     [rsp + 120], rax
+        lea     rdi, [rsp + 112]
+        call    af_realtime_ms
+        test    rax, rax
+        js      .error_recorded
+        mov     rax, [rsp + 120]
+        mov     rcx, [rsp + 112]
+        mov     [rax + RT_LAST_ERROR_AT_MS], rcx
+.error_recorded:
         mov     rdi, rbx
         call    af_ctl_conn_outbox_local
         mov     rcx, [rsp + 96]
@@ -455,6 +538,48 @@ af_ctl_runtime_of:
         xor     eax, eax
         AF_LEAVE
 
+; af_ctl_record_audit(af_ctl_conn *c, const void *entry, af_status status)
+;   -> void
+af_ctl_record_audit:
+        AF_ENTER 32
+        test    rdi, rdi
+        jz      .done
+        test    rsi, rsi
+        jz      .done
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        mov     r14, [r12]              ; STATIC action name
+        lea     r15, [tbl_mutating_methods]
+.scan:
+        mov     rax, [r15]
+        test    rax, rax
+        jz      .done
+        cmp     rax, r14
+        je      .record
+        add     r15, 8
+        jmp     .scan
+.record:
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        test    rax, rax
+        jz      .done
+        mov     rdi, [rax + RT_DB]
+        test    rdi, rdi
+        jz      .done
+        lea     r8, [v_audit_success]
+        test    r13, r13
+        jns     .have_outcome
+        lea     r8, [v_audit_failure]
+.have_outcome:
+        mov     rsi, r14
+        mov     rdx, [rbx + CONN_PEER_UID]
+        mov     rcx, [rbx + CONN_PEER_PID]
+        mov     r9, r13
+        call    af_repo_record_audit
+.done:
+        AF_LEAVE
+
 ; ---------------------------------------------------------------------------
 ; system.version
 ; ---------------------------------------------------------------------------
@@ -503,7 +628,7 @@ af_ctl_m_system_version:
         ; The control contract's own version, which a console negotiates on.
         mov     rdi, r12
         lea     rsi, [k_protocol_ver]
-        mov     rdx, 1
+        mov     rdx, AF_CTL_PROTOCOL_VERSION
         call    af_jw_member_uint
 
         mov     rdi, r12
@@ -2216,9 +2341,8 @@ af_ctl_m_config_current:
 
         ; The hash identifies a configuration revision without disclosing it.
         mov     rdi, r12
-        lea     rsi, [k_config_hash]
-        mov     rdx, [r14 + CFG_HASH]
-        call    af_jw_member_uint
+        mov     rsi, [r14 + CFG_HASH]
+        call    af_ctl_write_config_hash
 
         mov     rdi, r12
         lea     rsi, [k_config_path]
@@ -2269,6 +2393,196 @@ af_ctl_m_config_current:
         call    af_jw_member_bool
 
 .close:
+        mov     rdi, r12
+        call    af_jw_end_object
+        AF_LEAVE_OK
+
+; ---------------------------------------------------------------------------
+; diagnostics.export
+;
+; A bounded inline diagnostic bundle.  The control connection's frame ceiling
+; is the export ceiling, so this method cannot create an unbounded side file or
+; bypass the 0600 UDS authority boundary.  It deliberately reuses the existing
+; redacted config/provider/route/MCP writers: none emit secret values, payloads,
+; MCP stderr, tool arguments, or tool results.
+; ---------------------------------------------------------------------------
+        global af_ctl_m_diagnostics_export
+af_ctl_m_diagnostics_export:
+        AF_ENTER 64
+        mov     rbx, rdi                ; control connection (BORROWED)
+        mov     r12, rsi                ; writer (BORROWED)
+        mov     rdi, rbx
+        call    af_ctl_runtime_of
+        mov     r13, rax                ; runtime (BORROWED, nullable)
+
+        mov     rdi, r12
+        call    af_jw_begin_object
+        mov     rdi, r12
+        lea     rsi, [k_format_version]
+        mov     rdx, 1
+        call    af_jw_member_uint
+
+        lea     rdi, [rsp]
+        call    af_realtime_ms
+        test    rax, rax
+        js      .version
+        mov     rdi, r12
+        lea     rsi, [k_generated_at_ms]
+        mov     rdx, [rsp]
+        call    af_jw_member_uint
+
+.version:
+        lea     rdi, [rsp + 8]
+        call    af_version_str
+        ; member_string_n is intentionally spelled as key + string_n because
+        ; the canonical version spans are static but not NUL-terminated.
+        mov     [rsp + 32], rax
+        mov     rax, [rsp + 8]
+        mov     [rsp + 40], rax
+        mov     rdi, r12
+        lea     rsi, [k_version]
+        call    af_jw_key
+        mov     rdi, r12
+        mov     rsi, [rsp + 32]
+        mov     rdx, [rsp + 40]
+        call    af_jw_string_n
+
+        lea     rdi, [rsp + 8]
+        call    af_build_target_str
+        mov     [rsp + 32], rax
+        mov     rax, [rsp + 8]
+        mov     [rsp + 40], rax
+        mov     rdi, r12
+        lea     rsi, [k_target]
+        call    af_jw_key
+        mov     rdi, r12
+        mov     rsi, [rsp + 32]
+        mov     rdx, [rsp + 40]
+        call    af_jw_string_n
+
+        lea     rdi, [rsp + 8]
+        call    af_build_mode_str
+        mov     [rsp + 32], rax
+        mov     rax, [rsp + 8]
+        mov     [rsp + 40], rax
+        mov     rdi, r12
+        lea     rsi, [k_build]
+        call    af_jw_key
+        mov     rdi, r12
+        mov     rsi, [rsp + 32]
+        mov     rdx, [rsp + 40]
+        call    af_jw_string_n
+
+        mov     rdi, r12
+        lea     rsi, [k_protocol_ver]
+        mov     rdx, AF_CTL_PROTOCOL_VERSION
+        call    af_jw_member_uint
+
+        test    r13, r13
+        jz      .no_runtime_fields
+        mov     r14, [r13 + RT_CONFIG]
+        test    r14, r14
+        jz      .no_config_fields
+        mov     rdi, r12
+        mov     rsi, [r14 + CFG_HASH]
+        call    af_ctl_write_config_hash
+        mov     rdi, r12
+        lea     rsi, [k_schema_version]
+        mov     rdx, [r14 + CFG_SCHEMA_VERSION]
+        call    af_jw_member_uint
+.no_config_fields:
+        mov     rdi, r12
+        lea     rsi, [k_ready]
+        mov     rdx, [r13 + RT_READY]
+        call    af_jw_member_bool
+        mov     rdi, r12
+        lea     rsi, [k_shutting_down]
+        mov     rdx, [r13 + RT_SHUTTING_DOWN]
+        call    af_jw_member_bool
+
+        mov     rdi, r12
+        lea     rsi, [k_last_error]
+        call    af_jw_key
+        mov     rdi, r12
+        call    af_jw_begin_object
+        mov     rdi, r12
+        lea     rsi, [k_status]
+        mov     rdx, [r13 + RT_LAST_ERROR]
+        call    af_jw_member_int
+        mov     rdi, r12
+        lea     rsi, [k_at_ms]
+        mov     rdx, [r13 + RT_LAST_ERROR_AT_MS]
+        call    af_jw_member_uint
+        mov     rdi, r12
+        call    af_jw_end_object
+.no_runtime_fields:
+
+        mov     rdi, r12
+        lea     rsi, [k_dependencies]
+        call    af_jw_key
+        mov     rdi, r12
+        call    af_jw_begin_object
+        call    af_curl_version wrt ..plt
+        mov     rdx, rax
+        mov     rdi, r12
+        lea     rsi, [k_curl]
+        call    af_jw_member_string
+        call    af_sqlitec_libversion wrt ..plt
+        mov     rdx, rax
+        mov     rdi, r12
+        lea     rsi, [k_sqlite]
+        call    af_jw_member_string
+        call    jansson_version_str wrt ..plt
+        mov     rdx, rax
+        mov     rdi, r12
+        lea     rsi, [k_jansson]
+        call    af_jw_member_string
+        mov     rdi, r12
+        call    af_jw_end_object
+
+        ; A redacted config view plus live metadata.  These handlers ignore a
+        ; NULL params pointer and append one complete JSON value each.
+        mov     rdi, r12
+        lea     rsi, [k_config_current]
+        call    af_jw_key
+        mov     rdi, rbx
+        mov     rsi, r12
+        xor     edx, edx
+        call    af_ctl_m_config_current
+        mov     rdi, r12
+        lea     rsi, [k_providers]
+        call    af_jw_key
+        mov     rdi, rbx
+        mov     rsi, r12
+        xor     edx, edx
+        call    af_ctl_m_providers_list
+        mov     rdi, r12
+        lea     rsi, [k_routes]
+        call    af_jw_key
+        mov     rdi, rbx
+        mov     rsi, r12
+        xor     edx, edx
+        call    af_ctl_m_routes_list
+        mov     rdi, r12
+        lea     rsi, [k_mcp_servers]
+        call    af_jw_key
+        mov     rdi, rbx
+        mov     rsi, r12
+        xor     edx, edx
+        call    af_ctl_m_mcp_list
+
+        mov     rdi, r12
+        lea     rsi, [k_redacted]
+        mov     rdx, 1
+        call    af_jw_member_bool
+        mov     rdi, r12
+        lea     rsi, [k_payloads_included]
+        xor     edx, edx
+        call    af_jw_member_bool
+        mov     rdi, r12
+        lea     rsi, [k_secrets_included]
+        xor     edx, edx
+        call    af_jw_member_bool
         mov     rdi, r12
         call    af_jw_end_object
         AF_LEAVE_OK

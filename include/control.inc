@@ -10,6 +10,7 @@
 %define AF_CTL_FRAME_DEFAULT_MAX (1024 * 1024)
 %define AF_CTL_ID_MAX            128
 %define AF_CTL_MAX_CLIENTS       64
+%define AF_CTL_PROTOCOL_VERSION  1
 
 ; Pagination (docs/API_CONTRACT.md 11).
 %define AF_CTL_LIMIT_DEFAULT 100

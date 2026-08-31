@@ -22,6 +22,10 @@
 ;   +80  reload_count
 ;   +88  last_error    af_status of the most recent reload attempt
 ;   +96  prov          af_prov_engine * (NULL until the engine is up)
+;   +120 http          af_http_server * (NULL until the listener is up)
+;   +128 last_error_at_ms wall-clock timestamp for diagnostics, or 0
+;   +136 shutdown_deadline_ns monotonic drain deadline, or 0
+;   +144 termination_signals number of SIGINT/SIGTERM observations
 %define RT_CONFIG        0
 %define RT_DB            8
 %define RT_LOOP          16
@@ -37,6 +41,10 @@
 %define RT_PROV          96
 %define RT_ROUTING       104   ; af_routing * — health, circuits, cursors
 %define RT_MCP           112   ; af_mcp_supervisor * (NULL until it is up)
-%define RT_SIZE          120
+%define RT_HTTP          120   ; af_http_server * (NULL until it is up)
+%define RT_LAST_ERROR_AT_MS 128
+%define RT_SHUTDOWN_DEADLINE_NS 136
+%define RT_TERM_SIGNALS   144
+%define RT_SIZE          152
 
 %endif ; ASMFLOW_RUNTIME_INC

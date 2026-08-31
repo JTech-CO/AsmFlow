@@ -1,0 +1,5 @@
+[
+  {"screen": "overview", "width": 80, "height": 24, "file": "overview_80x24.txt"},
+  {"screen": "overview", "width": 100, "height": 30, "file": "overview_100x30.txt"},
+  {"screen": "overview", "width": 140, "height": 40, "file": "overview_140x40.txt"}
+]

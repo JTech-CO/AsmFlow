@@ -2,7 +2,7 @@
 
 ## Current phase
 
-`M10 — TUI and CLI`
+`M12 — Benchmark, Packaging, CI, and Release`
 
 ## Completed
 
@@ -241,20 +241,93 @@
     native suite ran 222 tests / 4167 checks; static M9 checks were 10/10; MCP
     Valgrind reported 0 errors and 0 definitely lost bytes.
 
+- 2026-08-30: M10 TUI and CLI complete at AsmFlow 0.9.0.
+  - `asmflow-tui` and `asmflowctl` share one bounded Unix-domain NDJSON client
+    without linking storage, provider, SQLite, libcurl, or llhttp internals.
+    Requests are correlated by string ID, unsolicited events are skipped within
+    a fixed budget, every frame is capped at 1 MiB, and socket send/receive
+    waits are bounded to five seconds.
+  - The interactive client requires `system.version.protocol_version == 1`
+    before loading its snapshot. Its seven screens are built only from control
+    responses; Requests and Logs show the daemon's explicit
+    `unsupported_in_this_build` state rather than reading SQLite or inventing
+    rows.
+  - A pure assembly model/canvas renders deterministic compact, standard,
+    wide, narrow, and too-small layouts. Required 80x24, 100x30, and 140x40
+    Overview snapshots are golden-tested; provider columns collapse by
+    priority without horizontal scrolling. Remote UTF-8 is sanitized, control
+    bytes are made visible, and `wcwidth`-based cells preserve wide-character
+    boundaries while retaining an ASCII fallback.
+  - Providers refresh preserves selection by stable ID across reordering and
+    deterministically rebinds after removal before issuing `providers.get`.
+    Composite Overview and Providers refreshes stage bounded responses before
+    commit; any validation or detail failure restores the prior canonical
+    frames and Provider/Route stable-ID selections as `STALE`. EOF/reset is
+    `DISCONNECTED`, mutations are blocked outside `CONNECTED`, and `r` retries
+    the original socket path.
+  - The command palette exposes `mcp.restart` through a target-specific Level 2
+    confirmation. Escape sends no mutation; Enter serializes exactly the
+    selected MCP stable ID. The complete action catalogue makes confirmation a
+    construction rule for every Level 2/3 action and leaves Level 4 actions
+    unavailable without claiming that every catalogue entry has a command UI.
+  - One ncursesw cleanup path restores keypad, echo, canonical input, cursor,
+    alternate screen, signal mask, and descriptors after quit, SIGINT, SIGHUP,
+    any ncurses presentation error, or exit following a daemon disconnect.
+  - `asmflowctl` validates its bounded object parameters before connecting,
+    emits the complete correlated envelope as exactly one JSON line in
+    `--json` mode, supplies deterministic tables for five common methods, and
+    uses stable exit codes 0 (success), 1 (daemon/transport/protocol/output),
+    and 2 (local usage).
+  - The authoritative M10 run passed all 41 focused tests with zero skips
+    (layout 9, keyboard 13, monochrome 4, terminal restore 5, CLI 10), four
+    static gate groups, 222 native tests / 4167 checks, and the focused TUI/CLI
+    Valgrind target with 0 errors and 0 bytes in use at exit.
+  - The first full run observed one non-reproduced M9 legacy timeout
+    `internal_error`. The exact test then passed once, the complete legacy suite
+    passed five consecutive runs, and the final unchanged M0-M10 gate passed;
+    no earlier-phase threshold or behavior was weakened.
+
+- 2026-08-31: M11 security, observability, and recovery complete at AsmFlow
+  0.10.0 (`make gate-m11`).
+  - Startup establishes a `0077` umask and fails closed on config/state/database
+    symlinks, non-regular inputs, wrong owners, or unsafe modes. The control
+    socket remains `0600` inside `0700`, and an exact `SO_PEERCRED` record must
+    match the daemon's effective UID.
+  - Non-loopback listeners require auth before every endpoint dispatch.
+    Provider credentials reject empty/control-byte values, while raw HTTP and
+    credential-bearing buffers use secure consume/clear/free paths.
+  - Structured header redaction combines mandatory authorization/cookie names,
+    configured names, and listener/provider/MCP auth headers. A seeded corpus
+    is absent from control/CLI output, diagnostics, database companions, normal
+    logs, and SIGKILL output.
+  - `diagnostics.export` reports bounded build/dependency/config-hash/error and
+    redacted live metadata with payload/secret inclusion hard-disabled. Public
+    config hashes are canonical unsigned decimal strings so the complete u64
+    domain survives signed-i64 JSON consumers.
+  - Migration 2 adds payload-free audit rows for implemented provider/MCP
+    mutations. Assembly-owned online backup and verified restore use checked
+    page arithmetic, exclusive/no-follow destinations, integrity check, mode
+    `0600`, and `fsync`, and never overwrite a destination.
+  - SIGTERM closes the listener first and drains in-flight responses for at
+    most five seconds on the existing reactor before MCP and SQLite teardown.
+    SIGKILL recovery reclaims a proven-stale socket, replays WAL, reapplies
+    migrations, and preserves provider/route/MCP/operator semantics.
+  - The deterministic fuzz smoke covers HTTP, JSON, config, URL, SSE, MCP,
+    control, and redaction in isolated bounded processes: 144 default cases and
+    a separate 227-case expanded-seed pass both succeeded.
+
 ## Next actions
 
-1. Implement the ncursesw lifecycle and one cleanup path that restores echo,
-   cursor, and terminal mode after normal exit, SIGINT, or daemon disconnect.
-2. Add theme/monochrome behavior and responsive 80x24, 100x30, and 140x40
-   layouts with priority-column collapse and no horizontal scrolling.
-3. Build components and screens from control-protocol snapshots while
-   preserving selection by stable ID across refreshes.
-4. Add the keymap, keyboard task scripts, command palette, complete Level 2–4
-   confirmation coverage, and a bounded/escaped log viewer.
-5. Implement `asmflowctl` table output and `--json` output matching the control
-   contract without direct SQLite access.
-6. Add and pass `test-tui-layout`, `test-tui-keyboard`, `test-tui-mono`,
-   `test-tui-terminal-restore`, and `test-cli-contract`.
+1. Implement the M12 benchmark runner for gateway overhead, TTFB, RSS, route
+   latency, and the release threshold report.
+2. Add reproducible-build checks and the mixed soak matrix; keep the required
+   eight-hour RC soak separate from ordinary pull-request latency.
+3. Build user-scope packaging with systemd unit, man pages, default config,
+   licenses, SBOM, checksums, and package install/remove verification.
+4. Complete the upgrade guide and exercise the M11 backup/restore primitives in
+   an RC upgrade/rollback drill.
+5. Pass `ci-local`, `bench`, `test-soak-8h`, `package`, `verify-package`, and
+   `reproducible-check` without lowering a release threshold.
 
 ## Open questions
 
@@ -263,10 +336,6 @@
 - Whether HTTP/2 is required for 1.0 or merely supported when libcurl negotiates it.
 - Whether the arena guard mode should be extended to the HTTP connection
   buffers or stay limited to request arenas.
-- Whether the control protocol should gain a handshake carrying
-  `protocol_version` before the first request, as `docs/API_CONTRACT.md` 12
-  anticipates, or keep reporting it from `system.version` as it does now. The
-  console in M10 is the first thing that would negotiate on it.
 - Whether the exchange table should grow beyond 64 slots. It is a hard ceiling
   independent of `limits.max_active_requests`, which can lower it and cannot
   raise it. Sixty-four upstream sockets plus 128 clients fits the loop's
@@ -274,9 +343,6 @@
 - Whether a provider credential should be readable from a file as well as an
   environment variable. It is read at request time rather than cached on the
   snapshot, so the read is already pluggable; nothing has asked for it yet.
-- Whether M11 should use cgroups or namespaces to contain MCP descendants that
-  deliberately escape the supervised process group with `setsid` or
-  `setpgid`. M8 cleans only the same process group and does not claim a sandbox.
 
 ## Resolved questions
 
@@ -290,6 +356,19 @@
 - 2026-08-30: bracketed IPv6 URL literals are unwrapped before address
   classification, so `[::1]` is loopback and private/link-local IPv6 literals
   remain gated by the explicit insecure-private-HTTP option.
+- 2026-08-30: long-lived control compatibility is negotiated by making
+  `system.version` the first request and requiring integer
+  `result.protocol_version == 1`; no separate transport handshake was added.
+  `asmflowctl` remains deliberately one-request, so automation performs this
+  preflight as its own command when needed.
+- 2026-08-31: M11 does not add cgroups or namespaces. Same-PGID cleanup remains
+  the implemented guarantee, escaped descendants remain a documented residual
+  risk, and sandbox-grade containment requires a future ADR rather than an
+  implicit security claim.
+- 2026-08-31: public `config_hash` values are canonical decimal strings rather
+  than JSON numbers. Internal FNV state remains u64; the wire value is an
+  opaque exact-match revision ID that cannot overflow Jansson's signed-i64
+  integer domain.
 
 ## Decision log
 
@@ -360,20 +439,36 @@
 | 2026-08-30 | Modern HTTP timeout closes only the request transfer; legacy timeout also sends its session-scoped cancellation notification | The two revisions define different cancellation lifecycles, so sharing one policy would leak legacy behavior into modern requests. |
 | 2026-08-30 | HTTP inventory caches remain server-local and use only a non-secret credential-change fingerprint | Even public cache scope cannot authorize cross-server or cross-credential reuse, and retaining the credential itself would create a new secret store. |
 | 2026-08-30 | MCP HTTP redirects and proxy discovery are disabled and TLS verification is never controlled by the plaintext-private-network exception | A configured endpoint and credential must not be silently redirected or routed through ambient process settings, and allowing HTTP to a private literal is not permission to weaken HTTPS. |
+| 2026-08-30 | Long-lived operator clients preflight with `system.version.protocol_version`; the one-shot CLI does not hide a second request | Compatibility is checked before any snapshot or mutation without changing the NDJSON transport, while scripts keep exact control over their request count. |
+| 2026-08-30 | TUI state and layout are pure assembly models rendered into a caller-owned Unicode-cell canvas before bounded ncurses presentation | The same state produces deterministic snapshots without terminal side effects, untrusted text is clipped between display cells, and terminal cleanup remains isolated in one lifecycle module. |
+| 2026-08-30 | Operator selection is owned by stable ID, never by a row index | A refresh may reorder or remove rows; rebinding before a detail request prevents an action from targeting whichever object inherited the old position. |
+| 2026-08-30 | Requests and Logs remain explicit unavailable screens until their control methods exist | Reading SQLite or another local source would violate the daemon ownership boundary, while an empty screen would falsely claim there is no data. |
+| 2026-08-30 | Confirmation is an action-catalogue construction rule; Level 4 actions are unavailable and confirmation is not a security boundary | A future command cannot become Level 2/3 without inheriting confirmation metadata, but daemon authorization and method-specific checks remain authoritative. |
+| 2026-08-31 | Authority-bearing paths fail closed instead of being silently repaired | Exact private parents, no-follow regular files, owner checks, and a process-wide `0077` umask make the trust boundary deterministic; changing an unsafe existing object would hide a deployment error. |
+| 2026-08-31 | Diagnostic config hashes are canonical u64 decimal strings | JSON permits larger numbers than Jansson's signed integer model; a string preserves every hash exactly and keeps the value an opaque revision rather than an arithmetic field. |
+| 2026-08-31 | Backup and restore use SQLite's online API and only fresh destinations | Copying a WAL database as bytes can produce an incoherent image, while exclusive no-follow creation plus integrity verification prevents replacement and symlink races. |
+| 2026-08-31 | Graceful shutdown continues the single reactor for a fixed five-second drain | Existing provider transfers need epoll/libcurl progress after accepts stop; a second loop or thread would violate ownership, while an unbounded wait would make service stop unreliable. |
 
 ## Last passed gate
 
-**`BUILD_DIR=build make gate-m9` from the WSL repository root at
-AsmFlow 0.8.0 — PASS (2026-08-30)**
+**`make -j1 BUILD_DIR=build gate-m11` from the WSL repository root at AsmFlow
+0.10.0 — PASS (2026-08-31).**
 
-M0 through M9 are all green.
-
-- The five focused M9 integration targets ran 17/17 tests with zero skips:
-  modern 3, legacy 2, version matrix 3, stream/cancellation 3, and security 6.
-- The six focused M8 regression targets ran 38/38 tests with zero skips.
-- `build/debug/asmflow-tests --filter mcp/ --verbose`: 38 tests / 350 checks.
-- Full native `build/debug/asmflow-tests`: 222 tests / 4167 checks.
-- Static ABI audit: 726 framed functions, 223 conforming leaf functions, and
-  1 documented exemption.
-- Static M9 gate checks: 10/10 PASS.
-- MCP Valgrind: 0 errors / 0 definitely lost bytes.
+- M0 through M11 behavior gates PASS.
+- The focused M11 surface ran 20 Python tests with zero skips plus 5 native
+  security and 5 native backup/restore tests. The CLI contract now has 11
+  tests, including the deterministic high-bit config-hash regression.
+- Full native `build/debug/asmflow-tests`: 240 tests / 4303 checks.
+- Static ABI audit: 862 framed functions, 265 conforming leaf functions, and 1
+  documented exemption. Static M11 audit: 7/7 groups PASS.
+- The default fuzz campaign ran 144 isolated cases across eight targets; an
+  expanded independent seed ran 227 cases. Focused HTTP fuzz Valgrind and ten
+  consecutive SIGKILL recovery drills also passed.
+- Full/native, config, storage/loop, HTTP, provider, routing, MCP, and TUI/CLI
+  Valgrind paths reported 0 errors and 0 definitely lost bytes.
+- `make -j1 BUILD_DIR=build check` ran 354 Python tests with zero failures.
+  `make BUILD_DIR=build gdb-abi-smoke` stopped at the ABI probe with caller
+  `rsp` residue `0`, confirming the required call-boundary alignment.
+- Working-tree gate base: `deb3d3505d7177b8060e415cbc0ad1a14b010b45`
+  (`Initial commit`). M10/M11 changes remain uncommitted, so there is not yet a
+  milestone commit SHA.

@@ -34,6 +34,14 @@ A separate ncursesw client displays and changes state through a local Unix-domai
 It never opens the SQLite database directly and cannot inherit provider secrets from the
 daemon unless a specific redacted value is returned.
 
+### `asmflowctl`
+
+A short-lived, non-interactive client sends one bounded control request and exits. It
+shares the NDJSON control client and redaction boundary with `asmflow-tui`, but has a
+separate entry point and does not link ncursesw. JSON mode preserves the complete
+correlated response envelope for automation; table mode is terminal-safe presentation.
+It links neither storage/provider objects nor SQLite/libcurl.
+
 ### Test and tooling processes
 
 Python mock servers and reference oracles are test-only. They are not runtime
@@ -43,9 +51,14 @@ dependencies and may not become a hidden implementation of product behavior.
 
 - Data plane: `127.0.0.1:8080` by default; configurable.
 - Control plane: `${XDG_RUNTIME_DIR}/asmflow/control.sock`, mode `0600`.
-- Persistence: `${XDG_STATE_HOME}/asmflow/asmflow.db`, parent directory mode `0700`.
-- Configuration: `${XDG_CONFIG_HOME}/asmflow/asmflow.json`, mode `0600` when it refers
-  to secrets or private endpoints.
+- Persistence: `${XDG_STATE_HOME}/asmflow/asmflow.db`, immediate parent directory
+  mode exactly `0700`; newly created database, WAL, and SHM files are owner-only.
+- Configuration: `${XDG_CONFIG_HOME}/asmflow/asmflow.json`, an owner-readable
+  regular file with no group/world permission bits inside an exactly `0700`
+  immediate parent. Symlinks and non-regular inputs are rejected.
+
+These local authority boundaries fail closed; unsafe existing objects are not repaired
+or overridden ([ADR 0013](docs/decisions/0013-m11-fail-closed-security-and-recovery.md)).
 
 Non-loopback data-plane binding requires explicit configuration and authentication.
 There is no TCP control plane in 1.0.
@@ -79,7 +92,9 @@ Rules:
 - `mcp/` owns protocol-era adapters and supervised process/HTTP state.
 - `storage/` is the only runtime module that issues SQL.
 - `control/` owns local operator commands and redacted snapshots.
-- `tui/` is a separate binary and does not link provider or storage internals.
+- `tui/` contains the shared pure presentation/control-client side plus separate
+  `asmflow-tui` and `asmflowctl` entry points. Neither binary links provider or storage
+  internals; only the interactive binary links the ncursesw ABI shim.
 - `ffi/` is a narrow C ABI boundary. It may not contain application policy.
 
 ## 5. Request lifecycle
@@ -164,6 +179,14 @@ Core tables:
 - `mcp_servers`
 - `mcp_capability_cache`
 - `settings`
+- `audit_events`
+
+The storage module also owns bounded SQLite online-backup and verified-restore
+primitives. They use the coherent SQLite backup API, checked page-count arithmetic,
+`NOFOLLOW`, exclusive destination creation, integrity verification, mode `0600`, and
+`fsync`. Restore creates a fresh path and never replaces an existing database.
+The coherence and no-overwrite policy is recorded in
+[ADR 0013](docs/decisions/0013-m11-fail-closed-security-and-recovery.md).
 
 ## 10. Memory and ABI
 
@@ -185,6 +208,15 @@ callback context.
   already committed client stream.
 - Unknown protocol fields are preserved or ignored according to the endpoint contract;
   they do not silently alter routing policy.
+- A first SIGTERM marks the daemon unready, closes the data-plane listener, and keeps
+  the same reactor running for at most five seconds so in-flight responses can drain.
+  Teardown then stops MCP, releases provider state, and closes SQLite in that order. A
+  second termination signal expires the grace immediately.
+- After SIGKILL, the next daemon start is responsible for reclaiming only a proven-stale
+  control socket, replaying SQLite WAL, and applying any pending transactional migration.
+
+The bounded drain and crash-recovery boundary is recorded in
+[ADR 0013](docs/decisions/0013-m11-fail-closed-security-and-recovery.md).
 
 ## 12. Architecture change control
 

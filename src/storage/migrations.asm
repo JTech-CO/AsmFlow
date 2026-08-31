@@ -33,7 +33,7 @@
         extern af_db_rollback
         extern af_realtime_ms
 
-%define AF_SCHEMA_VERSION 1
+%define AF_SCHEMA_VERSION 2
 
         section .rodata
 
@@ -164,6 +164,20 @@ m1_settings:
         db "  value TEXT NOT NULL,"
         db "  updated_at_ms INTEGER NOT NULL)", 0
 
+; Migration 2 adds the operator mutation audit trail.  It intentionally stores
+; only static action/outcome names, numeric peer identity, normalized status,
+; and time.  Params, target payloads, credentials, and environment names have
+; no column in which they could accidentally be persisted.
+m2_audit_events:
+        db "CREATE TABLE audit_events ("
+        db "  id INTEGER PRIMARY KEY,"
+        db "  occurred_at_ms INTEGER NOT NULL,"
+        db "  peer_uid INTEGER NOT NULL,"
+        db "  peer_pid INTEGER NOT NULL,"
+        db "  action TEXT NOT NULL,"
+        db "  outcome TEXT NOT NULL,"
+        db "  status INTEGER NOT NULL)", 0
+
 sql_select_version:
         db "SELECT COALESCE(MAX(version), 0) FROM schema_migrations", 0
 sql_table_exists:
@@ -189,11 +203,17 @@ migration_1_statements:
         dq m1_settings
         dq 0
 
+        align 8
+migration_2_statements:
+        dq m2_audit_events
+        dq 0
+
 ; The migration table: {version, statements}. Append only; never renumber.
         align 8
         global af_migration_table
 af_migration_table:
         dq 1, migration_1_statements
+        dq 2, migration_2_statements
         dq 0, 0
 
         section .data

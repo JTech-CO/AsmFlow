@@ -241,7 +241,7 @@ AF_TEST "db/open_migrate_and_report_the_version", 128
         mov     r12, rax
         AF_CHECK_EQ qword [rsp + 64], r12, "the version should match the target"
 
-        ; Ten tables plus one index; sqlite_schema counts only the tables here.
+        ; Eleven tables plus one index; sqlite_schema counts only the tables here.
         mov     rdi, rbx
         lea     rsi, [sql_count_tables]
         lea     rdx, [rsp + 72]
@@ -255,7 +255,7 @@ AF_TEST "db/open_migrate_and_report_the_version", 128
         mov     rdi, r13
         xor     esi, esi
         call    af_db_column_int
-        AF_CHECK_EQ rax, 10, "the schema should define ten tables"
+        AF_CHECK_EQ rax, 11, "the schema should define eleven tables"
         mov     rdi, r13
         call    af_db_finalize
 

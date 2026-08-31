@@ -1,0 +1,9 @@
+{
+  "overview": ["OVERVIEW", "[CONNECTED]", "Routes"],
+  "providers": ["PROVIDERS", "STATUS", "NAME", "Local Ollama"],
+  "routes": ["ROUTES", "ALIAS", "POLICY", "general"],
+  "requests": ["REQUESTS", "UNAVAILABLE", "unsupported_in_this_build"],
+  "mcp": ["MCP", "TRANSPORT", "ERA", "Filesystem"],
+  "logs": ["LOGS", "UNAVAILABLE", "unsupported_in_this_build"],
+  "settings": ["SETTINGS", "127.0.0.1", "schema"]
+}

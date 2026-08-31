@@ -41,6 +41,7 @@
         extern af_buf_init
         extern af_buf_append
         extern af_buf_free
+        extern af_buf_free_secure
 
         ; The provider engine, reached only through these three points:
         ; a connection that is closing cancels its transfer, a drained
@@ -52,6 +53,7 @@
         extern af_buf_data
         extern af_buf_len
         extern af_buf_consume
+        extern af_buf_consume_secure
 
         extern af_loop_add
         extern af_loop_mod
@@ -697,8 +699,9 @@ af_http_start_idle_timer:
 ; ---------------------------------------------------------------------------
 ; af_http_server_shutdown(af_http_server *s) -> void
 ;
-; Clients first, then the timer, then the listener: a client still registered
-; when the loop stops knowing about the server would be a slot nobody closes.
+; The listener is always removed first.  Graceful shutdown normally did this
+; earlier; the call is idempotent so startup failures keep the same safe order.
+; Remaining clients are then cancelled/released and finally the timer closes.
 ; ---------------------------------------------------------------------------
         global af_http_server_shutdown
 af_http_server_shutdown:
@@ -706,6 +709,9 @@ af_http_server_shutdown:
         test    rdi, rdi
         jz      .done
         mov     rbx, rdi
+
+        mov     rdi, rbx
+        call    af_http_server_stop_accepting
 
         xor     r12, r12
 .close_clients:
@@ -733,16 +739,112 @@ af_http_server_shutdown:
         call    af_sys_close
         mov     qword [rbx + HS_TIMER_FD], -1
 .timer_done:
+.done:
+        AF_LEAVE
 
+; ---------------------------------------------------------------------------
+; af_http_server_stop_accepting(af_http_server *s) -> void
+;
+; First phase of M11 shutdown.  The listener is removed before any connection
+; is inspected, so an already queued listen event is also invalidated in the
+; loop source table.  Idle/partial clients are closed; upstream work and bytes
+; already queued for a client remain live until completion or the daemon's
+; bounded grace deadline.
+; ---------------------------------------------------------------------------
+        global af_http_server_stop_accepting
+af_http_server_stop_accepting:
+        AF_ENTER 16
+        test    rdi, rdi
+        jz      .done
+        mov     rbx, rdi
         cmp     qword [rbx + HS_LISTEN_FD], 0
-        jl      .done
+        jl      .connections
         mov     rdi, [rbx + HS_LOOP]
         mov     rsi, [rbx + HS_LISTEN_FD]
         call    af_loop_del
         mov     rdi, [rbx + HS_LISTEN_FD]
         call    af_sys_close
         mov     qword [rbx + HS_LISTEN_FD], -1
+
+.connections:
+        xor     r12, r12
+.scan:
+        cmp     r12, AF_HTTP_MAX_CLIENTS
+        jae     .done
+        mov     rax, r12
+        imul    rax, rax, HC_SIZE
+        add     rax, rbx
+        add     rax, HS_CONNS
+        mov     r13, rax
+        cmp     qword [r13 + HC_FD], 0
+        jl      .next
+        or      qword [r13 + HC_FLAGS], HC_F_CLOSING
+        test    qword [r13 + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .watch_close
+        lea     rdi, [r13 + HC_OUTBOX]
+        call    af_buf_len
+        cmp     rax, [r13 + HC_OUT_CURSOR]
+        jbe     .release
+.watch_write:
+        mov     rdi, [rbx + HS_LOOP]
+        mov     rsi, [r13 + HC_FD]
+        mov     rdx, EPOLLOUT | EPOLLRDHUP
+        call    af_loop_mod
+        jmp     .next
+.watch_close:
+        mov     rdi, [rbx + HS_LOOP]
+        mov     rsi, [r13 + HC_FD]
+        mov     rdx, EPOLLRDHUP
+        call    af_loop_mod
+        jmp     .next
+.release:
+        mov     rdi, r13
+        call    af_http_conn_release
+.next:
+        inc     r12
+        jmp     .scan
 .done:
+        AF_LEAVE
+
+; af_http_server_inflight_count(const af_http_server *s) -> u64
+;
+; Only work whose client-visible completion is pending counts: a provider
+; exchange or queued response bytes.  Idle keep-alive and partial next requests
+; were closed by stop_accepting and cannot keep shutdown alive.
+        global af_http_server_inflight_count
+af_http_server_inflight_count:
+        AF_ENTER 16
+        test    rdi, rdi
+        jz      .zero
+        mov     rbx, rdi
+        xor     r12, r12
+        xor     r13, r13
+.count_loop:
+        cmp     r12, AF_HTTP_MAX_CLIENTS
+        jae     .count_done
+        mov     rax, r12
+        imul    rax, rax, HC_SIZE
+        add     rax, rbx
+        add     rax, HS_CONNS
+        mov     r14, rax
+        cmp     qword [r14 + HC_FD], 0
+        jl      .count_next
+        test    qword [r14 + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .count_one
+        lea     rdi, [r14 + HC_OUTBOX]
+        call    af_buf_len
+        cmp     rax, [r14 + HC_OUT_CURSOR]
+        jbe     .count_next
+.count_one:
+        inc     r13
+.count_next:
+        inc     r12
+        jmp     .count_loop
+.count_done:
+        mov     rax, r13
+        AF_LEAVE
+.zero:
+        xor     eax, eax
         AF_LEAVE
 
 ; ---------------------------------------------------------------------------
@@ -810,21 +912,21 @@ af_http_conn_release:
 
 .buffers:
         lea     rdi, [rbx + HC_INBOX]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_OUTBOX]
         call    af_buf_free
         lea     rdi, [rbx + HC_TARGET]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_NAME]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_VALUE]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_BODY]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_AUTH]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_CTYPE]
-        call    af_buf_free
+        call    af_buf_free_secure
         lea     rdi, [rbx + HC_RESPONSE]
         call    af_buf_free
         mov     qword [rbx + HC_OUT_CURSOR], 0
@@ -913,6 +1015,12 @@ af_http_on_listen:
         AF_ENTER 32
         mov     rbx, rdi                        ; server
         mov     r12, rsi                        ; listening descriptor
+
+        mov     rax, [rbx + HS_RT]
+        test    rax, rax
+        jz      .accept_loop
+        cmp     qword [rax + RT_SHUTTING_DOWN], 0
+        jne     .accept_done
 
 .accept_loop:
         mov     rdi, r12
@@ -1092,6 +1200,30 @@ af_http_on_conn:
         js      .close
 .no_write:
 
+        ; During graceful drain, never consume bytes for a second/pipelined
+        ; request.  Existing upstream work may finish and existing output may
+        ; flush.  A peer hangup still cancels its provider exchange promptly.
+        mov     rax, [rbx + HC_SERVER]
+        test    rax, rax
+        jz      .normal_events
+        mov     rax, [rax + HS_RT]
+        test    rax, rax
+        jz      .normal_events
+        cmp     qword [rax + RT_SHUTTING_DOWN], 0
+        je      .normal_events
+        or      qword [rbx + HC_FLAGS], HC_F_CLOSING
+        test    r13, EPOLLRDHUP | EPOLLHUP | EPOLLERR
+        jnz     .drain_then_close
+        test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
+        jnz     .done
+        lea     rdi, [rbx + HC_OUTBOX]
+        call    af_buf_len
+        cmp     rax, [rbx + HC_OUT_CURSOR]
+        ja      .done
+        jmp     .close
+
+.normal_events:
+
         test    r13, EPOLLIN
         jnz     .read
         test    r13, EPOLLRDHUP | EPOLLHUP | EPOLLERR
@@ -1160,6 +1292,15 @@ af_http_on_conn:
         call    af_buf_len
         cmp     rax, [rbx + HC_OUT_CURSOR]
         ja      .done                           ; finish writing first
+        mov     rax, [rbx + HC_SERVER]
+        test    rax, rax
+        jz      .normal_drain
+        mov     rax, [rax + HS_RT]
+        test    rax, rax
+        jz      .normal_drain
+        cmp     qword [rax + RT_SHUTTING_DOWN], 0
+        jne     .close                          ; no peer-drain linger on shutdown
+.normal_drain:
         mov     rdi, rbx
         call    af_http_begin_drain
         test    rax, rax
@@ -1371,7 +1512,7 @@ af_http_conn_feed:
 
         lea     rdi, [rbx + HC_INBOX]
         mov     rsi, [rsp + 32]
-        call    af_buf_consume
+        call    af_buf_consume_secure
         AF_LEAVE_OK
 
 .stopped:
@@ -1395,7 +1536,7 @@ af_http_conn_feed:
         call    af_http_count_header_bytes
         lea     rdi, [rbx + HC_INBOX]
         mov     rsi, [rsp + 24]
-        call    af_buf_consume
+        call    af_buf_consume_secure
 
         ; A pause is not an error either: the dispatcher suspended this
         ; connection on a provider, and what is left in the inbox is a
@@ -1474,6 +1615,34 @@ af_http_conn_resume:
         jl      .done
         test    qword [rbx + HC_FLAGS], HC_F_UPSTREAM
         jnz     .done
+
+        mov     rax, [rbx + HC_SERVER]
+        test    rax, rax
+        jz      .resume_normal
+        mov     rax, [rax + HS_RT]
+        test    rax, rax
+        jz      .resume_normal
+        cmp     qword [rax + RT_SHUTTING_DOWN], 0
+        je      .resume_normal
+        ; The first response is allowed to finish, but no bytes waiting in the
+        ; parser are interpreted as a new request.  Closing after the outbox is
+        ; empty also avoids the normal half-close drain extending the deadline.
+        and     qword [rbx + HC_FLAGS], ~HC_F_RESPONDED
+        or      qword [rbx + HC_FLAGS], HC_F_CLOSING
+        mov     rdi, rbx
+        call    af_http_conn_flush
+        test    rax, rax
+        js      .shutdown_release
+        lea     rdi, [rbx + HC_OUTBOX]
+        call    af_buf_len
+        cmp     rax, [rbx + HC_OUT_CURSOR]
+        ja      .done
+.shutdown_release:
+        mov     rdi, rbx
+        call    af_http_conn_release
+        AF_LEAVE
+
+.resume_normal:
 
         ; The response that just went out is this message's last word, so the
         ; next message starts clean.

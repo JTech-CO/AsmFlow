@@ -55,6 +55,10 @@
         extern af_config_release
         extern af_config_resolve_secrets
 
+        extern af_fs_check_config_path
+        extern af_fs_prepare_database_path
+        extern af_fs_check_private_file
+
         extern af_cfg_err_init
         extern af_cfg_err_free
         extern af_cfg_err_code
@@ -73,6 +77,7 @@
         extern af_loop_close
         extern af_loop_add
         extern af_loop_run
+        extern af_loop_step
         extern af_loop_stop
 
         extern af_ctl_server_init
@@ -81,6 +86,8 @@
 
         extern af_http_server_init
         extern af_http_server_shutdown
+        extern af_http_server_stop_accepting
+        extern af_http_server_inflight_count
 
         extern af_prov_engine_init
         extern af_prov_engine_shutdown
@@ -98,6 +105,7 @@
         extern af_signalfd_next
         extern af_signal_is_termination
         extern af_sys_close
+        extern af_sys_umask
         extern af_realtime_ms
         extern af_monotonic_ns
 
@@ -129,6 +137,9 @@ msg_nl:      db 10
 
 msg_read_failed: db "asmflowd: could not read the configuration file: "
 msg_read_failed_len equ $ - msg_read_failed
+msg_config_permissions:
+        db "asmflowd: configuration path is not owner-private", 10
+msg_config_permissions_len equ $ - msg_config_permissions
 msg_secret_hint:
         db      "  hint: the file is valid; a referenced environment variable is unset", 10
 msg_secret_hint_len equ $ - msg_secret_hint
@@ -145,15 +156,24 @@ msg_listening_len equ $ - msg_listening
 msg_http_ready: db "asmflowd: gateway listening on "
 msg_http_ready_len equ $ - msg_http_ready
 msg_colon: db ":"
-msg_no_upstream:
-        db      "asmflowd: the console is not wired in this build.", 10
-msg_no_upstream_len equ $ - msg_no_upstream
 msg_listener_failed: db "asmflowd: the gateway listener could not be bound", 10
 msg_listener_failed_len equ $ - msg_listener_failed
 msg_upstream_failed: db "asmflowd: the upstream client could not be started", 10
 msg_upstream_failed_len equ $ - msg_upstream_failed
 msg_shutdown: db "asmflowd: shutting down", 10
 msg_shutdown_len equ $ - msg_shutdown
+msg_shutdown_accepts: db "shutdown.accepts_stopped", 10
+msg_shutdown_accepts_len equ $ - msg_shutdown_accepts
+msg_shutdown_drained: db "shutdown.inflight_drained", 10
+msg_shutdown_drained_len equ $ - msg_shutdown_drained
+msg_shutdown_deadline: db "shutdown.inflight_deadline", 10
+msg_shutdown_deadline_len equ $ - msg_shutdown_deadline
+msg_shutdown_mcp: db "shutdown.mcp_stopped", 10
+msg_shutdown_mcp_len equ $ - msg_shutdown_mcp
+msg_shutdown_db: db "shutdown.db_closed", 10
+msg_shutdown_db_len equ $ - msg_shutdown_db
+
+%define AF_SHUTDOWN_GRACE_NS (5 * NS_PER_SEC)
 
         section .text
 
@@ -483,9 +503,35 @@ af_daemon_on_signal:
         call    af_signal_is_termination
         test    rax, rax
         jz      .drain
+        inc     qword [rbx + RT_TERM_SIGNALS]
         mov     qword [rbx + RT_SHUTTING_DOWN], 1
-        mov     rdi, [rbx + RT_LOOP]
-        call    af_loop_stop
+        mov     qword [rbx + RT_READY], 0
+
+        ; The first signal begins the bounded drain; a second signal shortens
+        ; the remaining grace to zero without running teardown inside this
+        ; event callback.
+        lea     rdi, [rsp + 8]
+        call    af_monotonic_ns
+        test    rax, rax
+        js      .deadline_ready
+        mov     rax, [rsp + 8]
+        cmp     qword [rbx + RT_TERM_SIGNALS], 1
+        jne     .store_deadline
+        mov     rcx, AF_SHUTDOWN_GRACE_NS
+        add     rax, rcx
+        jnc     .store_deadline
+        mov     rax, -1                 ; saturate on impossible clock overflow
+.store_deadline:
+        mov     [rbx + RT_SHUTDOWN_DEADLINE_NS], rax
+.deadline_ready:
+        cmp     qword [rbx + RT_TERM_SIGNALS], 1
+        jne     .drain
+        mov     rdi, [rbx + RT_HTTP]
+        call    af_http_server_stop_accepting
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_shutdown_accepts]
+        mov     rdx, msg_shutdown_accepts_len
+        call    af_out_bytes
         jmp     .drain
 .done:
         AF_LEAVE
@@ -548,6 +594,12 @@ af_daemon_run:
         mov     qword [rbx + CTX_SIGFD], -1
         mov     qword [rbx + CTX_EXIT], AF_EXIT_OK
 
+        ; Every file subsequently created by SQLite or a diagnostic/backup
+        ; path starts owner-only.  The daemon owns this process for its entire
+        ; lifetime, so there is no caller umask to restore.
+        mov     rdi, 0o077
+        call    af_sys_umask
+
         ; --- 1. signals, before anything else can be interrupted ---
         lea     rdi, [rbx + CTX_MASK]
         call    af_signal_mask_build
@@ -596,7 +648,20 @@ af_daemon_run:
         js      .config_rejected
         mov     r13, [rbx + CTX_RT + RT_CONFIG]
 
+        ; Parsing answers whether the document is valid.  Startup additionally
+        ; answers whether the file and its directory are a safe authority
+        ; boundary.  --check-config remains a content-only validator, which is
+        ; useful before installing a file into its final 0700 directory.
+        mov     rdi, [rbx + CTX_RT + RT_CONFIG_PATH]
+        call    af_fs_check_config_path
+        test    rax, rax
+        js      .config_permissions_failed
+
         ; --- 5. storage ---
+        mov     rdi, [r13 + CFG_STO_DB_PATH]
+        call    af_fs_prepare_database_path
+        test    rax, rax
+        js      .storage_failed
         lea     rdi, [rbx + CTX_DB]
         mov     rsi, [r13 + CFG_STO_DB_PATH]
         mov     rdx, [r13 + CFG_STO_BUSY_MS]
@@ -604,6 +669,11 @@ af_daemon_run:
         test    rax, rax
         js      .storage_failed
         or      qword [rbx + CTX_FLAGS], CTX_F_DB
+        mov     rdi, [r13 + CFG_STO_DB_PATH]
+        mov     esi, 1
+        call    af_fs_check_private_file
+        test    rax, rax
+        js      .storage_failed
         lea     rdi, [rbx + CTX_DB]
         call    af_migrations_apply
         test    rax, rax
@@ -713,6 +783,8 @@ af_daemon_run:
         test    rax, rax
         js      .listener_failed
         or      qword [rbx + CTX_FLAGS], CTX_F_HTTP
+        lea     rax, [rbx + CTX_HTTP]
+        mov     [rbx + CTX_RT + RT_HTTP], rax
 
         mov     qword [rbx + CTX_RT + RT_READY], 1
         mov     rdi, r13
@@ -746,15 +818,55 @@ af_daemon_run:
         lea     rsi, [msg_nl]
         mov     rdx, 1
         call    af_out_bytes
-        mov     edi, AF_FD_STDERR
-        lea     rsi, [msg_no_upstream]
-        mov     rdx, msg_no_upstream_len
-        call    af_out_bytes
-
-        ; --- 10. serve ---
+        ; --- 12. serve ---
+        ; A daemon-owned step loop is what allows SIGTERM to stop the listener
+        ; while continuing epoll/libcurl progress for requests already handed
+        ; to a provider.  No second thread or reactor is introduced.
+.serve:
+        cmp     qword [rbx + CTX_RT + RT_SHUTTING_DOWN], 0
+        jne     .serve_draining
         lea     rdi, [rbx + CTX_LOOP]
-        mov     rsi, 1000               ; wake at least once a second for timers
-        call    af_loop_run
+        mov     rsi, 1000
+        lea     rdx, [rsp]
+        call    af_loop_step
+        test    rax, rax
+        js      .serve_failed
+        jmp     .serve
+
+.serve_draining:
+        lea     rdi, [rbx + CTX_HTTP]
+        call    af_http_server_inflight_count
+        test    rax, rax
+        jz      .serve_drained
+        lea     rdi, [rsp + 8]
+        call    af_monotonic_ns
+        test    rax, rax
+        js      .serve_deadline
+        mov     rax, [rsp + 8]
+        cmp     rax, [rbx + CTX_RT + RT_SHUTDOWN_DEADLINE_NS]
+        jae     .serve_deadline
+        lea     rdi, [rbx + CTX_LOOP]
+        mov     rsi, 50                 ; responsive deadline without spinning
+        lea     rdx, [rsp]
+        call    af_loop_step
+        test    rax, rax
+        js      .serve_failed
+        jmp     .serve_draining
+
+.serve_drained:
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_shutdown_drained]
+        mov     rdx, msg_shutdown_drained_len
+        call    af_out_bytes
+        jmp     .shutdown
+.serve_deadline:
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_shutdown_deadline]
+        mov     rdx, msg_shutdown_deadline_len
+        call    af_out_bytes
+        jmp     .shutdown
+.serve_failed:
+        mov     qword [rbx + CTX_EXIT], AF_EXIT_INTERNAL
         jmp     .shutdown
 
 .config_rejected:
@@ -772,6 +884,14 @@ af_daemon_run:
         lea     rdi, [rbx + CTX_ERR]
         call    af_daemon_report_config_error
 .config_no_detail:
+        mov     qword [rbx + CTX_EXIT], AF_EXIT_CONFIG
+        jmp     .shutdown
+
+.config_permissions_failed:
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_config_permissions]
+        mov     rdx, msg_config_permissions_len
+        call    af_out_bytes
         mov     qword [rbx + CTX_EXIT], AF_EXIT_CONFIG
         jmp     .shutdown
 
@@ -831,6 +951,7 @@ af_daemon_run:
         jz      .no_http
         lea     rdi, [rbx + CTX_HTTP]
         call    af_http_server_shutdown
+        mov     qword [rbx + CTX_RT + RT_HTTP], 0
 .no_http:
         ; MCP owns a separate curl multi handle in M9. Stop every MCP transfer
         ; and stdio process before the provider releases process-wide libcurl.
@@ -840,6 +961,13 @@ af_daemon_run:
         lea     rdi, [rbx + CTX_MCP]
         call    af_mcp_sup_shutdown
 .no_mcp:
+        cmp     qword [rbx + CTX_RT + RT_SHUTTING_DOWN], 0
+        je      .no_mcp_trace
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_shutdown_mcp]
+        mov     rdx, msg_shutdown_mcp_len
+        call    af_out_bytes
+.no_mcp_trace:
         ; The provider engine owns curl_global_cleanup until that lifetime is
         ; moved to a common daemon wrapper, so it must be the last curl user.
         test    qword [rbx + CTX_FLAGS], CTX_F_PROV
@@ -878,6 +1006,13 @@ af_daemon_run:
         lea     rdi, [rbx + CTX_DB]
         call    af_db_close
 .no_db:
+        cmp     qword [rbx + CTX_RT + RT_SHUTTING_DOWN], 0
+        je      .no_db_trace
+        mov     edi, AF_FD_STDERR
+        lea     rsi, [msg_shutdown_db]
+        mov     rdx, msg_shutdown_db_len
+        call    af_out_bytes
+.no_db_trace:
         mov     rdi, [rbx + CTX_RT + RT_CONFIG]
         call    af_config_release
         test    qword [rbx + CTX_FLAGS], CTX_F_ERR

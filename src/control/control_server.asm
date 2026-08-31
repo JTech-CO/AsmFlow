@@ -55,6 +55,7 @@
         extern af_sys_read
         extern af_sys_write
         extern af_sys_getsockopt
+        extern af_sys_geteuid
         extern af_status_from_errno
 
 %define AF_CTL_READ_CHUNK 65536
@@ -293,6 +294,8 @@ af_ctl_on_listen:
 
         mov     rdi, r14
         call    af_ctl_read_peer_credentials
+        test    rax, rax
+        js      .drop
 
         mov     rdi, [rbx + CTLS_LOOP]
         mov     rsi, r13
@@ -323,16 +326,18 @@ af_ctl_on_listen:
         AF_LEAVE
 
 ; ---------------------------------------------------------------------------
-; af_ctl_read_peer_credentials(af_ctl_conn *c) -> void
+; af_ctl_read_peer_credentials(af_ctl_conn *c) -> af_status
 ;
-; SO_PEERCRED, recorded for the audit trail. It is NOT an authorisation check:
-; the socket's 0600 mode is what restricts access, and SECURITY_MODEL.md 7 is
-; explicit that loopback and file permissions are the boundary rather than any
-; identity a peer asserts. A failure to read it is not fatal.
+; The socket mode is the first boundary. SO_PEERCRED is the second: accepting a
+; descriptor whose credentials cannot be read, are not exactly struct ucred, or
+; do not name this process's effective UID would turn a pathname race or a
+; packaging mistake into control-plane access. Every such case is fail-closed.
 ; ---------------------------------------------------------------------------
         global af_ctl_read_peer_credentials
 af_ctl_read_peer_credentials:
         AF_ENTER 32
+        test    rdi, rdi
+        jz      .invalid
         mov     rbx, rdi
         ; struct ucred { pid_t pid; uid_t uid; gid_t gid; }
         mov     qword [rsp], 0
@@ -345,13 +350,54 @@ af_ctl_read_peer_credentials:
         lea     r8, [rsp + 16]
         call    af_sys_getsockopt
         test    rax, rax
-        js      .done
-        mov     eax, [rsp]
-        mov     [rbx + CONN_PEER_PID], rax
-        mov     eax, [rsp + 4]
-        mov     [rbx + CONN_PEER_UID], rax
-.done:
+        js      .syscall_failed
+
+        call    af_sys_geteuid
+        mov     rcx, rax
+        mov     edx, [rsp + 16]
+        lea     rsi, [rsp]
+        mov     rdi, rbx
+        call    af_ctl_validate_peer_credentials
         AF_LEAVE
+.syscall_failed:
+        mov     rdi, rax
+        call    af_status_from_errno
+        AF_LEAVE
+.invalid:
+        AF_LEAVE_ERR AF_E_INVALID
+
+; ---------------------------------------------------------------------------
+; af_ctl_validate_peer_credentials(af_ctl_conn *c, const struct ucred *cred,
+;                                  u64 cred_len, u64 effective_uid)
+;   -> af_status
+;
+; `cred` is BORROWED and is copied only after every check passes. Kept separate
+; from getsockopt so exact-length and identity policy have deterministic native
+; regression tests rather than depending on the UID running the test suite.
+; ---------------------------------------------------------------------------
+        global af_ctl_validate_peer_credentials
+af_ctl_validate_peer_credentials:
+        test    rdi, rdi
+        jz      .invalid
+        test    rsi, rsi
+        jz      .invalid
+        cmp     rdx, 12
+        jne     .invalid
+        mov     eax, [rsi + 4]
+        cmp     rax, rcx
+        jne     .denied
+        mov     eax, [rsi]
+        mov     [rdi + CONN_PEER_PID], rax
+        mov     eax, [rsi + 4]
+        mov     [rdi + CONN_PEER_UID], rax
+        xor     eax, eax
+        ret
+.denied:
+        mov     rax, AF_E_PERM
+        ret
+.invalid:
+        mov     rax, AF_E_INVALID
+        ret
 
 ; ---------------------------------------------------------------------------
 ; af_ctl_on_conn(void *ctx, i64 fd, u64 events) -> void

@@ -22,6 +22,7 @@ here.
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -71,10 +72,10 @@ def run_python(module: str, build_dir: Path) -> None:
 
 # --- DoD 4 -----------------------------------------------------------------
 
-# `asmflowd` is the single writer (ARCHITECTURE.md 9). A test that opened the
-# database itself would prove the daemon's behaviour against a file the daemon
-# was not the only author of, and would also quietly establish a second writer
-# as an acceptable pattern.
+# `asmflowd` is the single writer (ARCHITECTURE.md 9). M11 recovery/security
+# tests may inspect a stopped or live database through SQLite's immutable
+# read-only URI mode, but they may not establish a second writer. Runtime code
+# outside storage may not call SQLite at all.
 ALLOWED_SQLITE_USERS = {
     "src/storage/db.asm",
     "src/storage/migrations.asm",
@@ -85,7 +86,67 @@ ALLOWED_SQLITE_USERS = {
     "Makefile",
 }
 
-SQLITE_PATTERN = re.compile(r"\bsqlite3?\b|import\s+sqlite3", re.IGNORECASE)
+READONLY_SQLITE_TESTS = {
+    "tests/test_crash_recovery.py",
+    "tests/test_security.py",
+}
+
+SQLITE_PATTERN = re.compile(
+    r"\bsqlite3(?:_[A-Za-z0-9_]+)?\b|import\s+sqlite3", re.IGNORECASE
+)
+SQL_WRITE_PATTERN = re.compile(
+    r"^\s*(?:INSERT\s+(?:INTO|OR)|UPDATE\s+\S+\s+SET|DELETE\s+FROM|"
+    r"REPLACE\s+INTO|CREATE\s+(?:TABLE|INDEX|TRIGGER|VIEW)|ALTER\s+TABLE|"
+    r"DROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)|VACUUM(?:\s|$)|"
+    r"ATTACH\s+(?:DATABASE|['\"])|DETACH\s+DATABASE|REINDEX(?:\s|$)|"
+    r"ANALYZE(?:\s|$)|BEGIN(?:\s|$)|COMMIT(?:\s|$)|ROLLBACK(?:\s|$))",
+    re.IGNORECASE,
+)
+
+
+def check_readonly_sqlite_test(path: Path) -> None:
+    """Permit a verification oracle only when every open is URI read-only.
+
+    This is deliberately structural. A future edit that removes `mode=ro`,
+    omits `uri=True`, or adds DDL/DML turns the M4 single-writer gate red.
+    """
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(path))
+    connections = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "connect"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "sqlite3"
+            ):
+                connections += 1
+                segment = ast.get_source_segment(text, node) or ""
+                uri_true = any(
+                    keyword.arg == "uri"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                    for keyword in node.keywords
+                )
+                if "mode=ro" not in segment or not uri_true:
+                    raise GateError(
+                        f"{path.relative_to(ROOT)} opens SQLite without an "
+                        "inline mode=ro URI and uri=True"
+                    )
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and SQL_WRITE_PATTERN.search(node.value)
+        ):
+            raise GateError(
+                f"{path.relative_to(ROOT)} contains write SQL in a read-only oracle"
+            )
+    if connections == 0:
+        raise GateError(
+            f"{path.relative_to(ROOT)} is allowlisted for read-only SQLite but opens none"
+        )
 
 
 def check_single_writer() -> None:
@@ -96,6 +157,9 @@ def check_single_writer() -> None:
             relative = path.relative_to(ROOT).as_posix()
             if relative in ALLOWED_SQLITE_USERS:
                 continue
+            if relative in READONLY_SQLITE_TESTS:
+                check_readonly_sqlite_test(path)
+                continue
             text = path.read_text(encoding="utf-8", errors="ignore")
             for number, line in enumerate(text.splitlines(), 1):
                 if line.lstrip().startswith((";", "#")):
@@ -104,8 +168,9 @@ def check_single_writer() -> None:
                     offenders.append(f"{relative}:{number}: {line.strip()}")
     if offenders:
         raise GateError(
-            "these files reach SQLite directly, but only the daemon's storage "
-            "module may:\n  " + "\n  ".join(offenders)
+            "these files call SQLite directly, but only storage runtime code "
+            "or explicitly read-only verification oracles may:\n  "
+            + "\n  ".join(offenders)
         )
 
 

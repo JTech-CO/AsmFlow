@@ -119,6 +119,29 @@ af_buf_clear:
         ret
 
 ; ---------------------------------------------------------------------------
+; af_buf_clear_secure(af_buffer *b) -> void
+;
+; Drops the contents but keeps the allocation, wiping the whole allocation
+; first.  Wiping capacity rather than only length also removes bytes left behind
+; by a previous consume or by a shorter replacement (SECURITY_MODEL.md 6).
+; ---------------------------------------------------------------------------
+        global af_buf_clear_secure
+af_buf_clear_secure:
+        AF_ENTER 0
+        test    rdi, rdi
+        jz      .done
+        mov     rbx, rdi
+        mov     rdi, [rbx + BUF_DATA]
+        test    rdi, rdi
+        jz      .cleared
+        mov     rsi, [rbx + BUF_CAP]
+        call    af_mem_zero
+.cleared:
+        mov     qword [rbx + BUF_LEN], 0
+.done:
+        AF_LEAVE
+
+; ---------------------------------------------------------------------------
 ; af_buf_reserve(af_buffer *b, u64 additional) -> af_status
 ;
 ; Guarantees room for `additional` more bytes past the current length.
@@ -330,6 +353,39 @@ af_buf_consume:
 .invalid:
         mov     rax, AF_E_INVALID
         AF_LEAVE
+
+; ---------------------------------------------------------------------------
+; af_buf_consume_secure(af_buffer *b, u64 n) -> af_status
+;
+; Preserves the unconsumed suffix exactly like af_buf_consume, then wipes every
+; byte outside the new logical length. This is for incremental input buffers
+; that may contain both a credential-bearing request and a pipelined successor.
+; ---------------------------------------------------------------------------
+        global af_buf_consume_secure
+af_buf_consume_secure:
+        AF_ENTER 0
+        test    rdi, rdi
+        jz      .invalid
+        mov     rbx, rdi
+        call    af_buf_consume
+        test    rax, rax
+        js      .done
+
+        mov     rdi, [rbx + BUF_DATA]
+        test    rdi, rdi
+        jz      .ok
+        mov     rcx, [rbx + BUF_LEN]
+        add     rdi, rcx
+        mov     rsi, [rbx + BUF_CAP]
+        sub     rsi, rcx
+        jz      .ok
+        call    af_mem_zero
+.ok:
+        xor     eax, eax
+.done:
+        AF_LEAVE
+.invalid:
+        AF_LEAVE_ERR AF_E_INVALID
 
 ; ---------------------------------------------------------------------------
 ; af_buf_take(af_buffer *b, u8 **out_data, u64 *out_len) -> af_status

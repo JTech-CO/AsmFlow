@@ -22,6 +22,11 @@
 %include "config.inc"
 %include "fileio.inc"
 
+%define CFG_STAT_SIZE     144
+%define CFG_STAT_MODE_OFF 24
+%define CFG_S_IFMT        0o170000
+%define CFG_S_IFREG       0o100000
+
         extern af_alloc
         extern af_free
         extern af_mem_zero
@@ -325,7 +330,7 @@ af_config_hash_bytes:
 ; ---------------------------------------------------------------------------
         global af_config_read_file
 af_config_read_file:
-        AF_ENTER 64
+        AF_ENTER 192
         test    rdi, rdi
         jz      .invalid
         test    rsi, rsi
@@ -341,12 +346,28 @@ af_config_read_file:
         js      .done
 
         mov     rdi, rbx
-        mov     rsi, O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+        ; O_NONBLOCK prevents a FIFO or device substituted for the config from
+        ; hanging startup before its type can be rejected below.  It has no
+        ; effect on ordinary regular-file reads.
+        mov     rsi, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
         xor     edx, edx
         call    af_sys_open
         test    rax, rax
         js      .open_failed
         mov     r13, rax
+
+        ; Validate the already-open descriptor, not a second path lookup.  The
+        ; path-level owner/mode policy is daemon-only; this type invariant also
+        ; applies to --check-config and every unit caller.
+        mov     rdi, r13
+        lea     rsi, [rsp + 16]
+        call    af_sys_fstat
+        test    rax, rax
+        js      .fstat_failed
+        mov     eax, [rsp + 16 + CFG_STAT_MODE_OFF]
+        and     eax, CFG_S_IFMT
+        cmp     eax, CFG_S_IFREG
+        jne     .wrong_type
 
 .read_loop:
         ; chunk = min(65536, ceiling - length)
@@ -414,6 +435,14 @@ af_config_read_file:
         call    af_sys_close
         mov     rax, [rsp + 8]
         AF_LEAVE
+.fstat_failed:
+        mov     rdi, rax
+        call    af_status_from_errno
+        mov     [rsp + 8], rax
+        jmp     .close_and_free
+.wrong_type:
+        mov     qword [rsp + 8], AF_E_CFG_PATH
+        jmp     .close_and_free
 .open_failed:
         mov     [rsp + 8], rax
         mov     rdi, r12

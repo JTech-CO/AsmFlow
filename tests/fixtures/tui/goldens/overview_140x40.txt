@@ -1,0 +1,19 @@
+AsmFlow [CONNECTED]  cfg:42  req:18  mcp:3/4                                                                          <TIME UTC>
++------------------+--------------------------------------------------------------------------------+--------------------------------------+
+| > Overview       | OVERVIEW                                                                       | DETAIL                               |
+|   Providers      |                                                                                | Gateway                              |
+|   Routes         | Gateway       [OK] READY                                                       | State       [OK] ready               |
+|   Requests       | Providers     1 healthy / 2 warning / 1 open / 1 disabled                     | Revision    42                       |
+|   MCP            | MCP servers   1 ready / 1 starting / 1 crash-loop / 1 stopped                 | Requests    18 active                |
+|   Logs           |                                                                                | Control     [OK] connected           |
+|   Settings       | ROUTES                                                                         |                                      |
+|                  | STATUS ALIAS       POLICY          TARGETS ELIGIBLE ACTIVE LAST SELECTED       | Next action                          |
+|                  | [OK]   general     priority        2       2        1      p-local            | Use 2-7 to inspect component state. |
+|                  | [WARN] code-fast   least_latency   2       1        2      p-code             |                                      |
+|                  | [OPEN] vision      priority        2       0        0      -                  |                                      |
+|                  |                                                                                |                                      |
+|                  | RECENT EVENTS                                                                  |                                      |
+|                  | [OPEN] Vision Remote circuit opened 3 times. Open Providers to inspect state.  |                                      |
+|                  | [FAIL] Git Legacy is paused in a crash loop. Open MCP to inspect state.        |                                      |
++------------------+--------------------------------------------------------------------------------+--------------------------------------+
+r refresh   : commands   ? help   q quit

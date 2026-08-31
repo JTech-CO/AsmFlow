@@ -9,8 +9,87 @@ once executable releases begin.
 
 ### Planned
 
-- ncursesw TUI.
-- Security hardening, observability, and packaging.
+- Benchmarks, packaging, CI, and release preparation (M12).
+
+## [0.10.0] - 2026-08-31
+
+### Added
+
+- Bounded `diagnostics.export` with build/dependency identity, canonical config
+  hash, last normalized error, and redacted config/provider/route/MCP state;
+  payload and secret inclusion are hard-disabled.
+- Assembly-owned SQLite online backup, read-only integrity verification, and
+  restore-to-new-path primitives with checked size arithmetic, exclusive
+  `NOFOLLOW` destinations, mode `0600`, and `fsync`.
+- Payload-free `audit_events` rows for implemented provider and MCP mutations,
+  plus the seven focused M11 targets and aggregate `make gate-m11` audit.
+- Deterministic isolated fuzz smoke for HTTP, JSON, configuration, URL, SSE,
+  MCP, control framing, and structured redaction.
+
+### Changed
+
+- The active milestone advances to M12 — Benchmark, Packaging, CI, and Release.
+- Public `config_hash` fields are canonical unsigned decimal strings, preserving
+  the full 64-bit revision domain across signed-64-bit JSON consumers.
+- SIGTERM first closes the data-plane listener, then drains in-flight responses
+  for up to five seconds on the existing reactor before MCP and SQLite teardown;
+  a second signal expires the grace immediately.
+- Startup now recovers a SIGKILL-left WAL and proven-stale control socket before
+  revalidating migrations and persisted provider/route/MCP metadata.
+
+### Security
+
+- Config, state, database, and control paths enforce owner-only modes, regular
+  file/type checks, `NOFOLLOW`, restrictive creation umask, and fail-closed
+  same-EUID `SO_PEERCRED` validation.
+- Header credentials reject empty/control-byte values, and HTTP input/auth/body
+  buffers are securely wiped on consume, replacement, and release paths.
+- A seeded secret corpus is absent from control output, diagnostics, CLI output,
+  SQLite/WAL/SHM, normal logs, and abrupt SIGKILL process output.
+- Non-loopback startup without auth is refused, and missing/wrong credentials
+  are rejected before dispatch on every data-plane endpoint.
+
+## [0.9.0] - 2026-08-30
+
+### Added
+
+- `asmflow-tui`, a keyboard-first ncursesw control client with seven screens,
+  monochrome operation, deterministic `--dump-layout` output, and responsive
+  compact, standard, wide, narrow, and too-small presentations.
+- `asmflowctl`, a one-request control client with deterministic table output,
+  complete one-line JSON response envelopes, bounded local parameter
+  validation, and stable exit codes for success, runtime failure, and usage
+  error.
+- M10 layout, keyboard, monochrome, terminal-restore, and CLI contract suites,
+  with `make gate-m10` as the aggregate milestone target.
+
+### Changed
+
+- The active milestone advances to M11 — Security, Observability, and
+  Recovery.
+- Interactive operator startup now checks control `protocol_version == 1`
+  before loading a snapshot. Providers refresh keeps selection by stable ID
+  across reordering and chooses a deterministic surviving row after removal.
+  Composite refreshes stage bounded responses and restore prior frames plus
+  stable selections if any response or detail lookup fails.
+- Provider columns collapse by priority without horizontal scrolling.
+  Requests and Logs show an explicit `unsupported_in_this_build` unavailable
+  state.
+- SIGHUP and every ncurses presentation error now use the same terminal
+  restoration path as quit, SIGINT, and daemon disconnect.
+
+### Security
+
+- Both operator clients use only the mode-0600 control socket and never access
+  SQLite or provider transports directly. Default TUI screens omit secrets,
+  prompts, and model responses.
+- Remote UTF-8 and control bytes are sanitized before terminal output;
+  monochrome and table modes emit no ANSI colour sequences.
+- The action-risk catalogue marks every Level 2 or 3 action as requiring
+  confirmation and keeps Level 4 actions unavailable. The currently exposed
+  `mcp.restart` palette flow proves both cancel-without-request and confirmed
+  request paths. Daemon-side policy and method-specific confirmation checks
+  remain authoritative.
 
 ## [0.8.0] - 2026-08-30
 

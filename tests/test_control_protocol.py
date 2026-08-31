@@ -103,6 +103,7 @@ class DaemonUnderTest:
         self.root = Path(self.tmp.name)
         (self.root / "run").mkdir()
         (self.root / "state").mkdir()
+        (self.root / "state").chmod(0o700)
 
         document = config_corpus.base_document()
         self.socket_path = str(self.root / "run" / "asmflow" / "control.sock")
@@ -112,6 +113,7 @@ class DaemonUnderTest:
             mutate(document)
         self.config_path = self.root / "asmflow.json"
         self.config_path.write_text(json.dumps(document), encoding="utf-8")
+        self.config_path.chmod(0o600)
 
         self.process = subprocess.Popen(
             [str(daemon_path()), "--config", str(self.config_path)],

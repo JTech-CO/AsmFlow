@@ -8,30 +8,21 @@ The runtime is designed around NASM x86-64 assembly, a small and explicit C ABI
 boundary, a local OpenAI-compatible gateway, and a supervisor for local and
 remote Model Context Protocol (MCP) servers.
 
-> **Project status:** `0.8.0` — current phase
-> `M10 — TUI and CLI`. `asmflowd` is a working gateway: it validates
-> its configuration, migrates SQLite, binds a mode-0600 control socket and a
-> TCP listener, answers `/healthz`, `/readyz`, and `/v1/models`, and forwards
-> `/v1/responses` and `/v1/chat/completions` to a routed provider — buffered or
-> streamed as Server-Sent Events, with backpressure, cancellation, and
-> normalised upstream errors. Routing chooses among a route's targets by
-> priority, round-robin, or observed latency, opens a circuit against a
-> provider that keeps failing, and falls back to another target on a retryable
-> failure — never once a byte has reached the client. The MCP stdio supervisor
-> is wired with literal argument vectors and no shell, an allowlisted bounded
-> environment and explicit working directory, isolated modern `2026-07-28` and
-> legacy `2025-11-25` adapters, validated inventory/readiness, and bounded
-> framing, stderr capture, cancellation, restart, and shutdown paths. MCP
-> Streamable HTTP is also wired: modern requests use matching per-request
-> metadata and version headers over JSON or request-scoped SSE POSTs, while an
-> isolated legacy adapter owns initialization, session, and GET-stream state.
-> Only an unrecognized bodyless HTTP 400 selects legacy. Environment-backed
-> SecretRefs, TLS and plaintext-origin policy, disabled redirects/proxies, and
-> TTL/auth-context-partitioned inventories bound the remote path. The
-> TUI/console is not wired yet. See
-> [PROGRESS.md](PROGRESS.md) for the
-> authoritative per-milestone state and [HARNESS.md](HARNESS.md) for the gate
-> each milestone must pass.
+> **Project status:** `0.10.0` — M11 is complete; the current phase is
+> `M12 — Benchmark, Packaging, CI, and Release`.
+>
+> `asmflowd` is a working gateway with strict bounded HTTP, deterministic
+> routing, pre-commit fallback, buffered/SSE provider forwarding, MCP stdio and
+> Streamable HTTP supervision, SQLite state, and a local control plane.
+> Modern MCP `2026-07-28` and legacy `2025-11-25` keep physically separate
+> state and only an unrecognized bodyless HTTP 400 selects legacy.
+>
+> `asmflow-tui` and `asmflowctl` are control-socket-only operator clients;
+> neither opens SQLite or reaches provider transports. M11 adds owner-only
+> file/peer enforcement, structured secret redaction, payload-free diagnostics
+> and audit rows, verified backup/restore, bounded SIGTERM drain, SIGKILL/WAL
+> recovery, and deterministic parser fuzz smoke. See [PROGRESS.md](PROGRESS.md)
+> for authoritative milestone evidence and [HARNESS.md](HARNESS.md) for gates.
 
 ## 한국어 요약
 
@@ -44,10 +35,12 @@ stdio 및 Streamable HTTP 기반 MCP 서버를 감독한다. 핵심 제어 흐�
 
 ## Product boundary
 
-AsmFlow consists of two cooperating processes:
+AsmFlow consists of one daemon and two cooperating operator clients:
 
 - `asmflowd`: headless gateway, provider router, persistence owner, and MCP supervisor.
 - `asmflow-tui`: keyboard-first ncurses control client connected through a local Unix-domain socket.
+- `asmflowctl`: non-interactive control client with deterministic table and
+  full-envelope JSON output.
 
 The first public release targets:
 
@@ -93,13 +86,81 @@ OpenAI-compatible client
           | Unix-domain control socket
           v
 +---------------------------+
-|       asmflow-tui         |
-| ncursesw dashboard        |
+| Operator clients          |
+| asmflow-tui / asmflowctl  |
 +---------------------------+
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) and the
 [technical whitepaper](docs/TECHNICAL_WHITEPAPER_KR.md) for the normative design.
+
+## Operator clients
+
+Both clients use the local NDJSON control protocol only. They do not read or
+write SQLite, and their default views never show secrets, prompts, or model
+responses. The default socket is
+`${XDG_RUNTIME_DIR}/asmflow/control.sock` (or
+`/run/user/<uid>/asmflow/control.sock` when the runtime directory is unset);
+`--socket PATH` selects another socket.
+
+`asmflow-tui` provides seven keyboard-first screens: Overview, Providers,
+Routes, Requests, MCP, Logs, and Settings. Requests and Logs explicitly report
+`unsupported_in_this_build` instead of reading another data source. Examples:
+
+```bash
+asmflow-tui
+asmflow-tui --socket /run/user/1000/asmflow/control.sock --screen providers
+asmflow-tui --mono
+asmflow-tui --screen overview --dump-layout 100x30
+```
+
+`--mono` and `NO_COLOR` preserve the same status text without colour.
+`--dump-layout WIDTHxHEIGHT` writes a canonical, non-interactive snapshot.
+Interactive startup checks control `protocol_version == 1` before loading
+state. A Providers refresh preserves the focused provider by stable ID even
+when rows reorder; if that ID disappears, selection moves to a deterministic
+surviving row. Composite refreshes commit only after every staged response is
+valid; a failure keeps the prior frames and stable selections visible as
+`STALE`.
+
+The implemented keyboard surface is `1`-`7` for screens, `j`/`k` or arrow
+keys for rows, `r` to refresh or reconnect, `:` for available commands, `?`
+for help, and `q` to quit. The UI does not advertise deferred filter/open
+actions.
+
+The layout reflows without horizontal scrolling:
+
+| Terminal | Presentation |
+| --- | --- |
+| `80x24` | Compact tabs and priority-collapsed columns |
+| `100x30` | Standard table layout |
+| `140x40` | Navigation, main table, and detail panes |
+| Below `80` columns | Narrow list/detail drill-down |
+| Below `60x16` | Actionable size diagnostic with an `asmflowctl` fallback |
+
+The currently exposed `mcp.restart` palette action requires explicit
+confirmation before its control request is sent. The complete action catalogue
+marks every Level 2 and 3 action as confirmation-required and keeps Level 4
+actions unavailable; catalogue entries do not imply that every action already
+has an interactive command. Confirmation does not replace the daemon's own
+authorization, policy, or state checks.
+
+`asmflowctl` accepts a control method and an optional bounded JSON object:
+
+```bash
+asmflowctl [--socket PATH] [--json|--table] METHOD [PARAMS_JSON]
+asmflowctl providers.list '{}'
+asmflowctl --table routes.list
+asmflowctl --json system.snapshot '{}'
+asmflowctl --json diagnostics.export '{}'
+```
+
+Table output is the human-readable default. `--json` preserves the complete
+control response envelope, including additive fields, as exactly one JSON line
+terminated by LF. Exit status is `0` for `ok: true`, `1` for daemon,
+connection, protocol, or output failure, and `2` for local usage errors.
+Scripts that require an explicit compatibility preflight can call
+`asmflowctl --json system.version` and require `result.protocol_version == 1`.
 
 ## Repository map
 
@@ -146,7 +207,7 @@ Each milestone has a gate target that asserts its Definition of Done from
 `HARNESS.md`. Running the latest one runs every earlier one:
 
 ```bash
-make gate-m9
+make gate-m11
 ```
 
 - `gate-m0` — repository structure, JSON contracts, examples, secret policy,
@@ -204,6 +265,16 @@ make gate-m9
   bodyless-400-only era fallback, legacy session/GET behavior, cancellation,
   URL/auth/TLS/redirect/proxy policy, and monotonic TTL caches partitioned by
   configured server and authorization context.
+- `gate-m10` — operator clients: deterministic responsive layouts at
+  `80x24`, `100x30`, and `140x40`; keyboard-only navigation and
+  confirmation; priority-based column collapse; monochrome and control-byte
+  safety; provider stable-ID refresh; terminal restoration after quit, SIGINT,
+  and daemon disconnect; and `asmflowctl` JSON/table and exit-code contracts.
+- `gate-m11` — security and recovery: non-loopback authentication across every
+  endpoint; same-EUID control peers; private config/state/socket/database
+  permissions; structured secret redaction and payload-free diagnostics/audit
+  rows; verified no-overwrite SQLite backup/restore; eight bounded fuzz targets;
+  ordered SIGTERM drain; and SIGKILL WAL/migration/stale-socket recovery.
 
 `make help` lists every target.
 
@@ -222,6 +293,8 @@ configuration, executes MCP stdio servers with `execve`-style argument arrays ra
 than a shell, and does not store prompts or model outputs unless the operator opts in.
 Remote MCP uses HTTPS by default and environment SecretRefs; TLS peer/name checks stay
 enabled, redirects are disabled, and proxy environment variables are ignored.
+Configuration and state paths fail closed on symlinks, wrong ownership, or unsafe
+permissions. Diagnostic export never includes payloads or secret values.
 Review [SECURITY.md](SECURITY.md) and [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
 before enabling non-loopback access or third-party MCP servers.
 

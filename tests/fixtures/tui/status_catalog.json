@@ -1,0 +1,14 @@
+{
+  "healthy": "[OK]",
+  "ready": "[OK]",
+  "degraded": "[WARN]",
+  "half_open": "[WARN]",
+  "stale": "[WARN]",
+  "open": "[OPEN]",
+  "failed": "[FAIL]",
+  "crash_loop": "[FAIL]",
+  "disabled": "[OFF]",
+  "stopped": "[OFF]",
+  "starting": "[RUN]",
+  "in_flight": "[RUN]"
+}

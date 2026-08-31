@@ -211,12 +211,20 @@ The M9 Streamable HTTP adapter enforces these controls:
 
 At startup:
 
-- reject world-writable config parent unless explicitly overridden for development;
-- reject symlink-sensitive paths where `NOFOLLOW` policy applies;
-- create runtime/state directories with restrictive umask;
-- bind UDS atomically and remove only a stale socket proven not to be active;
-- use temporary file + fsync + rename for generated config/migration backup;
-- never chmod broader to repair permissions automatically without explicit command.
+- establish a process-wide `0077` umask before creating authority-bearing files;
+- require the config's immediate parent to be a real-UID-owned directory with mode
+  exactly `0700`, and require the config itself to be an owner-readable regular file
+  with no group/world permission bits;
+- reject config symlinks, FIFOs, devices, wrong owners, and unsafe modes before parsing;
+- create a missing state-directory leaf as `0700`, but require an existing parent to
+  already be a real-UID-owned directory with mode exactly `0700`;
+- require an existing database to be a real-UID-owned, owner-readable/writable regular
+  file with no group/world permission bits and no symlink;
+- bind the control socket as `0600` inside an exact `0700` directory, remove only a
+  socket proven stale, and require an exact Linux `SO_PEERCRED` record whose UID matches
+  the daemon's effective UID;
+- reject unsafe existing objects rather than chmod-repairing them or accepting a
+  development override.
 
 ## 14. SQLite security and integrity
 
@@ -225,7 +233,11 @@ At startup:
 - no SQL built from provider IDs or user strings;
 - transactional migrations;
 - schema version table;
-- backup before destructive migration;
+- bounded backup/restore through SQLite's online-backup API rather than byte-copying a
+  live WAL database;
+- checked page-count arithmetic, a fresh `O_EXCL|NOFOLLOW` destination at mode `0600`,
+  integrity verification, and `fsync` before success;
+- backup and restore never overwrite or rename over an existing path;
 - WAL and SHM files protected by directory permissions;
 - integrity check available as maintenance command;
 - raw payloads disabled by default;
@@ -270,7 +282,7 @@ Diagnostic export includes:
 - error classes and timestamps;
 - dependency versions;
 - no secret values;
-- no payloads unless separately and explicitly requested.
+- no payloads; no request parameter can enable payload or secret inclusion.
 
 ## 17. TUI safety
 

@@ -4,7 +4,7 @@
 **Legacy target:** MCP `2025-11-25`  
 **Initial deprecated transport policy:** MCP `2024-11-05` HTTP+SSE is not implemented by default.
 
-**0.8.0 implementation boundary:** the stdio supervisor and M9 Streamable HTTP
+**0.10.0 implementation boundary:** the stdio supervisor and Streamable HTTP
 adapters are implemented and verified for the modern and legacy revisions
 above. Deprecated 2024 HTTP+SSE and OAuth/browser authorization remain outside
 this support boundary.
@@ -34,7 +34,7 @@ Every modern request includes:
     "io.modelcontextprotocol/protocolVersion": "2026-07-28",
     "io.modelcontextprotocol/clientInfo": {
       "name": "AsmFlow",
-      "version": "0.8.0"
+      "version": "0.10.0"
     },
     "io.modelcontextprotocol/clientCapabilities": {}
   }
@@ -61,7 +61,7 @@ Request:
       "io.modelcontextprotocol/protocolVersion": "2026-07-28",
       "io.modelcontextprotocol/clientInfo": {
         "name": "AsmFlow",
-        "version": "0.8.0"
+        "version": "0.10.0"
       },
       "io.modelcontextprotocol/clientCapabilities": {}
     }
@@ -111,7 +111,7 @@ Server-reported identity is not used for authorization or executable trust decis
 
 On Streamable HTTP, a correlated unsupported-version response is recognized as
 modern evidence and produces an actionable failure; it never selects legacy.
-AsmFlow 0.8.0 does not retry a different mutually supported modern version.
+AsmFlow 0.10.0 does not retry a different mutually supported modern version.
 
 A probe timeout is bounded, cancelled, and the probed process is stopped and
 reaped before a fresh process receives legacy `initialize`. This internal era
@@ -187,9 +187,9 @@ No field from `LegacySession` appears in the modern request context.
 
 ## 7. Initial feature support
 
-The table below is the implemented 0.8.0 stdio and Streamable HTTP subset.
+The table below is the implemented 0.10.0 stdio and Streamable HTTP subset.
 
-| MCP feature | Modern 2026 | Legacy 2025 | 0.8.0 behavior |
+| MCP feature | Modern 2026 | Legacy 2025 | 0.10.0 behavior |
 |---|---:|---:|---|
 | Discovery / initialization | Yes | Yes | Required, version-isolated |
 | Tools list | Yes | Yes | Required current inventory |
@@ -254,9 +254,15 @@ A manual tool test requires:
 - daemon `confirmed=true` field;
 - timeout and output bounds.
 
-TUI confirmation and warnings are M10 work; configurable per-tool policy and a
-persistent redacted audit event are M11 work. They are not 0.8.0 claims. AsmFlow
-does not infer that a tool is safe from its name or description.
+The 0.10.0 TUI command palette exposes `mcp.restart` with a target-specific
+Level 2 confirmation: Escape sends no request, while Enter submits the selected
+server ID. It does not yet expose `mcp.tool_test`, so a TUI warning modal for
+tool description, schema, arguments, and external effects is not a 0.10.0
+claim. The daemon still requires `confirmed=true` from an explicit control
+client. M11 records the static action, peer, outcome, and normalized status in
+a persistent audit row without arguments, results, or credentials. A
+configurable per-tool policy remains outside this milestone. AsmFlow does not
+infer that a tool is safe from its name or description.
 
 ## 10. Process supervision
 
@@ -289,7 +295,7 @@ configured sliding window, applies bounded exponential backoff, and latches
 The process-group guarantee covers descendants that remain in the child's
 saved PGID. A descendant that deliberately escapes with `setsid` or `setpgid`
 is outside the M8 guarantee; cgroup or namespace containment is future
-hardening, not a 0.8.0 sandbox claim.
+hardening, not a 0.10.0 sandbox claim.
 
 ## 11. Framing and limits
 

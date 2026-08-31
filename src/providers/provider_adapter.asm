@@ -246,6 +246,51 @@ af_prov_build_url:
         AF_LEAVE_ERR AF_E_INVALID
 
 ; ---------------------------------------------------------------------------
+; af_prov_validate_header_value(const char *value, u64 max_bytes,
+;                               u64 *out_len) -> af_status
+;
+; The environment supplies a NUL-terminated string, while an HTTP header value
+; must not contain a byte that can create another header or alter framing. The
+; bound includes the terminating NUL, so the caller can reserve exactly the
+; validated payload plus its terminator without an unbounded cstr scan.
+;
+; `value` and `out_len` are BORROWED. `out_len` is written only on success.
+; ---------------------------------------------------------------------------
+        global af_prov_validate_header_value
+af_prov_validate_header_value:
+        test    rdi, rdi
+        jz      .invalid
+        test    rdx, rdx
+        jz      .invalid
+        test    rsi, rsi
+        jz      .limit
+        xor     eax, eax
+.scan:
+        cmp     rax, rsi
+        jae     .limit
+        movzx   ecx, byte [rdi + rax]
+        test    ecx, ecx
+        jz      .complete
+        cmp     ecx, 0x20
+        jb      .invalid
+        cmp     ecx, 0x7f
+        je      .invalid
+        inc     rax
+        jmp     .scan
+.complete:
+        test    rax, rax
+        jz      .invalid
+        mov     [rdx], rax
+        xor     eax, eax
+        ret
+.limit:
+        mov     rax, AF_E_LIMIT
+        ret
+.invalid:
+        mov     rax, AF_E_INVALID
+        ret
+
+; ---------------------------------------------------------------------------
 ; af_prov_build_headers(af_prov_exchange *x) -> af_status
 ;
 ; Builds the request header list into PX_SLIST. On failure the partial list is
@@ -369,9 +414,25 @@ af_prov_build_headers:
         test    rax, rax
         jz      .secret_missing
         mov     r14, rax
+
+        ; Validate before copying. The staging buffer's maximum is 512 bytes;
+        ; the remaining bound includes the final NUL appended below.
+        lea     rdi, [rsp]
+        call    af_buf_len
+        cmp     rax, 512
+        jae     .header_limit
+        mov     rsi, 512
+        sub     rsi, rax
+        mov     rdi, r14
+        lea     rdx, [rsp + 40]
+        call    af_prov_validate_header_value
+        test    rax, rax
+        js      .fail_status
+
         lea     rdi, [rsp]
         mov     rsi, r14
-        call    af_buf_append_cstr
+        mov     rdx, [rsp + 40]
+        call    af_buf_append
         test    rax, rax
         js      .fail_status
         lea     rdi, [rsp]
@@ -404,6 +465,9 @@ af_prov_build_headers:
 
 .secret_missing:
         mov     rax, AF_E_CFG_SECRET_MISSING
+        jmp     .fail_status
+.header_limit:
+        mov     rax, AF_E_LIMIT
         jmp     .fail_status
 .invalid_free:
         mov     rax, AF_E_INVALID

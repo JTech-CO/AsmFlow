@@ -1,0 +1,22 @@
+{
+  "methods": {
+    "system.version": {
+      "reply": {"ok": true, "result": {"version": "0.8.0", "target": "linux-x86_64", "build": "debug", "protocol_version": 1}}
+    },
+    "system.snapshot": {
+      "reply": {"ok": true, "result": {"revision": 9, "ready": true, "counts": {"providers": 2, "routes": 0, "mcp_servers": 0, "requests": 0, "connections": 1}}}
+    },
+    "providers.list": {
+      "reply": {
+        "ok": true,
+        "result": [
+          {"id": "p-escape", "display_name": "remote\u001b[2J\u001b]52;c;ZXZpbA==\u0007ERASED_BY_REMOTE", "adapter": "openai_dual", "health": "healthy", "active_requests": 0, "max_concurrency": 1, "observed_latency_us": 10},
+          {"id": "p-wide", "display_name": "한글 é 🚦", "adapter": "openai_dual", "health": "degraded", "active_requests": 0, "max_concurrency": 1, "observed_latency_us": 20}
+        ]
+      }
+    },
+    "config.current": {"reply": {"ok": true, "result": {"revision": 9}}},
+    "routes.list": {"reply": {"ok": true, "result": []}},
+    "mcp.list": {"reply": {"ok": true, "result": []}}
+  }
+}

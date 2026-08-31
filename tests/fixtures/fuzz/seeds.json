@@ -1,0 +1,52 @@
+{
+  "json": [
+    {"name": "object", "utf8": "{\"items\":[1,true,null,\"text\"]}"},
+    {"name": "escaped", "utf8": "{\"quote\":\"\\\"\\\\\",\"nested\":{\"x\":[]}}"},
+    {"name": "embedded-nul", "hex": "7b226b223a22610062227d"},
+    {"name": "unbalanced", "utf8": "[[{\"x\":1}]"}
+  ],
+  "config": [
+    {"name": "empty-object", "utf8": "{}"},
+    {"name": "plaintext-secret", "utf8": "{\"api_key\":\"must-not-be-accepted\"}"},
+    {"name": "duplicate-root-key", "utf8": "{\"schema_version\":1,\"schema_version\":1}"},
+    {"name": "binary-prefix", "hex": "00ff7b7d"}
+  ],
+  "http": [
+    {"name": "health-get", "utf8": "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n"},
+    {"name": "json-body-unknown", "utf8": "POST /fuzz HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"},
+    {"name": "conflicting-framing", "utf8": "POST /fuzz HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"},
+    {"name": "partial-header", "utf8": "GET /healthz HTTP/1.1\r\nX-Unfinished: value"}
+  ],
+  "url": [
+    {"name": "https", "utf8": "https://example.invalid/v1"},
+    {"name": "loopback", "utf8": "http://127.0.0.1:11434/v1"},
+    {"name": "userinfo", "utf8": "https://user:pass@example.invalid/v1"},
+    {"name": "ipv6", "utf8": "http://[::1]:8080/mcp"},
+    {"name": "embedded-nul", "hex": "68747470733a2f2f6578616d706c652e696e76616c6964002f6d6370"}
+  ],
+  "sse": [
+    {"name": "lf-event", "utf8": "data: one\n\n"},
+    {"name": "crlf-events", "utf8": "event: token\r\ndata: two\r\n\r\ndata: three\r\r"},
+    {"name": "bare-cr-tail", "utf8": "data: undecided\r"},
+    {"name": "binary-data", "hex": "646174613a2000ff0a0a"}
+  ],
+  "mcp": [
+    {"name": "notification", "utf8": "{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}"},
+    {"name": "unmatched-result", "utf8": "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"},
+    {"name": "invalid-shape", "utf8": "{\"jsonrpc\":\"2.0\",\"method\":7}"},
+    {"name": "multiple-lines", "utf8": "{\"jsonrpc\":\"2.0\",\"method\":\"ping\"}\nnot-json"}
+  ],
+  "control": [
+    {"name": "request", "utf8": "{\"id\":1,\"method\":\"system.version\"}"},
+    {"name": "crlf", "utf8": "{\"id\":2}\r"},
+    {"name": "multiple", "utf8": "{}\n[]"},
+    {"name": "invalid-utf8", "hex": "7b22c328223a317d"}
+  ],
+  "redaction": [
+    {"name": "authorization", "utf8": "authorization\u0000Bearer top-secret"},
+    {"name": "mixed-case-cookie", "utf8": "CoOkIe\u0000session=secret"},
+    {"name": "configured-header", "utf8": "x-asmflow-secret\u0000configured-secret"},
+    {"name": "ordinary-header", "utf8": "content-type\u0000application/json"},
+    {"name": "binary-value", "hex": "7365742d636f6f6b69650000ff01"}
+  ]
+}

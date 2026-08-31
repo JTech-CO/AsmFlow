@@ -26,6 +26,7 @@ RELEASE_DIR := $(BUILD_DIR)/release
 DAEMON_ENTRY := src/platform/linux_x86_64/entry_daemon.asm
 DAEMON_ONLY  := $(DAEMON_ENTRY) src/platform/linux_x86_64/daemon.asm
 TUI_ENTRY    := src/tui/entry_tui.asm
+CLI_ENTRY    := src/tui/entry_ctl.asm
 
 SRC_PLATFORM := $(filter-out $(DAEMON_ONLY),$(wildcard src/platform/linux_x86_64/*.asm))
 SRC_CORE     := $(wildcard src/core/*.asm)
@@ -38,15 +39,19 @@ SRC_ROUTING  := $(wildcard src/routing/*.asm)
 SRC_MCP      := $(wildcard src/mcp/*.asm)
 SRC_STORAGE  := $(wildcard src/storage/*.asm)
 SRC_CONTROL  := $(wildcard src/control/*.asm)
-SRC_TUI      := $(filter-out $(TUI_ENTRY),$(wildcard src/tui/*.asm))
+SRC_TUI_ALL  := $(wildcard src/tui/*.asm)
+SRC_TUI_CLI_ONLY := src/tui/ctl_run.asm src/tui/table_output.asm
+SRC_TUI      := $(filter-out $(TUI_ENTRY) $(CLI_ENTRY) $(SRC_TUI_CLI_ONLY),$(SRC_TUI_ALL))
+SRC_TUI_TEST := $(filter-out $(TUI_ENTRY) $(CLI_ENTRY),$(SRC_TUI_ALL))
 # The Jansson adapter is linked by anything that parses JSON, which is both
 # binaries. The SQLite manifest belongs to the daemon alone, because the console
 # must not link libsqlite3 at all (AGENTS.md invariant 14). The ABI probe exists
 # only for the test harness.
 SRC_FFI_SHARED := src/ffi/json_shim.c
 SRC_FFI_DAEMON := src/ffi/sqlite_shim.c src/ffi/llhttp_shim.c src/ffi/curl_shim.c
+SRC_FFI_TUI    := src/ffi/ncurses_shim.c
 SRC_FFI_TEST   := src/ffi/abi_probe.c
-SRC_FFI_C      := $(SRC_FFI_SHARED) $(SRC_FFI_DAEMON) $(SRC_FFI_TEST)
+SRC_FFI_C      := $(SRC_FFI_SHARED) $(SRC_FFI_DAEMON) $(SRC_FFI_TUI) $(SRC_FFI_TEST)
 
 # Assembly test sources. The unit-test binary links every runtime module except
 # the two entry points, so a test may call any exported function directly.
@@ -66,14 +71,17 @@ SRC_DAEMON := $(DAEMON_ONLY) $(SRC_SHARED) $(SRC_CONFIG) $(SRC_HTTP) \
               $(SRC_PROVIDER) $(SRC_ROUTING) $(SRC_MCP) $(SRC_STORAGE) \
               $(SRC_CONTROL) $(SRC_FFI_DAEMON)
 
-# The console links the control-plane *client* half plus shared primitives.
+# Both operator clients link only the control-plane client half.  The
+# non-interactive CLI deliberately excludes ncurses and its shim.
+SRC_CTL_CLIENT := $(filter %/control_client.asm %/control_frame.asm,$(SRC_CONTROL))
 SRC_TUI_BIN := $(TUI_ENTRY) $(SRC_TUI) $(SRC_SHARED) \
-               $(filter %/control_client.asm %/control_frame.asm,$(SRC_CONTROL))
+               $(SRC_CTL_CLIENT) $(SRC_FFI_TUI)
+SRC_CLI_BIN := $(CLI_ENTRY) $(SRC_TUI_CLI_ONLY) $(SRC_SHARED) $(SRC_CTL_CLIENT)
 
 SRC_TESTS := $(SRC_TEST_ASM) $(SRC_SHARED) $(SRC_CONFIG) $(SRC_HTTP) \
              $(SRC_PROVIDER) $(SRC_ROUTING) $(SRC_MCP) $(SRC_STORAGE) \
-             $(SRC_CONTROL) $(SRC_TUI) src/platform/linux_x86_64/daemon.asm \
-             $(SRC_FFI_DAEMON) $(SRC_FFI_TEST) $(SRC_TEST_C)
+             $(SRC_CONTROL) $(SRC_TUI_TEST) src/platform/linux_x86_64/daemon.asm \
+             $(SRC_FFI_DAEMON) $(SRC_FFI_TUI) $(SRC_FFI_TEST) $(SRC_TEST_C)
 
 # ---------------------------------------------------------------------------
 # Toolchain flags.
@@ -114,6 +122,8 @@ DAEMON_CPPFLAGS := $(shell $(PKGCONF) --cflags $(DAEMON_PKGS) 2>/dev/null)
 # screen. It must not appear here with libcurl or libsqlite3.
 TUI_PKGS := jansson ncursesw
 TUI_LIBS := $(shell $(PKGCONF) --libs $(TUI_PKGS) 2>/dev/null)
+CLI_PKGS := jansson
+CLI_LIBS := $(shell $(PKGCONF) --libs $(CLI_PKGS) 2>/dev/null)
 
 TEST_LIBS := $(DAEMON_LIBS) $(TUI_LIBS)
 
@@ -126,6 +136,8 @@ DAEMON_OBJ_DEBUG   := $(call obj_of,$(DEBUG_DIR),$(SRC_DAEMON))
 DAEMON_OBJ_RELEASE := $(call obj_of,$(RELEASE_DIR),$(SRC_DAEMON))
 TUI_OBJ_DEBUG      := $(call obj_of,$(DEBUG_DIR),$(SRC_TUI_BIN))
 TUI_OBJ_RELEASE    := $(call obj_of,$(RELEASE_DIR),$(SRC_TUI_BIN))
+CLI_OBJ_DEBUG      := $(call obj_of,$(DEBUG_DIR),$(SRC_CLI_BIN))
+CLI_OBJ_RELEASE    := $(call obj_of,$(RELEASE_DIR),$(SRC_CLI_BIN))
 TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
 
 .PHONY: help check check-buildless test validate package clean \
@@ -150,7 +162,11 @@ TEST_OBJ_DEBUG     := $(call obj_of,$(DEBUG_DIR),$(SRC_TESTS))
         test-mcp-http-modern test-mcp-http-legacy \
         test-mcp-version-matrix test-mcp-http-stream \
         test-mcp-http-security \
-        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 gate-m7 gate-m8 gate-m9 \
+        test-tui-layout test-tui-keyboard test-tui-mono \
+        test-tui-terminal-restore test-cli-contract valgrind-tui \
+        test-security test-redaction test-permissions fuzz-smoke \
+        test-backup-restore test-crash-recovery test-graceful-shutdown \
+        gate-m0 gate-m1 gate-m2 gate-m3 gate-m4 gate-m5 gate-m6 gate-m7 gate-m8 gate-m9 gate-m10 gate-m11 \
         toolchain-versions
 
 help:
@@ -188,6 +204,19 @@ help:
 	  '  make test-mcp-version-matrix HTTP version/error era selection' \
 	  '  make test-mcp-http-stream    Fragmented SSE and cancellation' \
 	  '  make test-mcp-http-security  URL/auth/redirect/proxy/cache policy' \
+	  '  make test-tui-layout         Responsive layout and golden snapshots' \
+	  '  make test-tui-keyboard       Keyboard workflow and confirmations' \
+	  '  make test-tui-mono           NO_COLOR, mono, and ASCII fallback' \
+	  '  make test-tui-terminal-restore  PTY termios/cursor cleanup paths' \
+	  '  make test-cli-contract       asmflowctl JSON/table wire contract' \
+	  '  make valgrind-tui            Focused TUI/CLI client memcheck' \
+	  '  make test-security           Auth, credentials, peer checks, and audit events' \
+	  '  make test-redaction          Secret-corpus and diagnostic-export non-disclosure' \
+	  '  make test-permissions        Config, state, database, and UDS ownership/modes' \
+	  '  make fuzz-smoke              Bounded deterministic parser/framer fuzz smoke' \
+	  '  make test-backup-restore     SQLite backup/restore semantic equivalence' \
+	  '  make test-crash-recovery     SIGKILL WAL, migration, and stale-socket recovery' \
+	  '  make test-graceful-shutdown  Ordered bounded SIGTERM drain and cleanup' \
 	  '' \
 	  'Milestone gates:' \
 	  '  make gate-m0        Specification and contract scaffold' \
@@ -200,6 +229,8 @@ help:
 	  '  make gate-m7        Routing, health, circuit breaking, fallback' \
 	  '  make gate-m8        MCP stdio process supervision' \
 	  '  make gate-m9        MCP Streamable HTTP and version adapters' \
+	  '  make gate-m10       TUI and non-interactive CLI' \
+	  '  make gate-m11       Security, observability, and recovery' \
 	  '' \
 	  'Packaging:' \
 	  '  make package        Create a source archive under dist/'
@@ -243,6 +274,10 @@ $(DEBUG_DIR)/asmflow-tui: $(TUI_OBJ_DEBUG)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS_SEC) $(LDFLAGS_MAP) -o $@ $^ $(TUI_LIBS)
 
+$(DEBUG_DIR)/asmflowctl: $(CLI_OBJ_DEBUG)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS_SEC) $(LDFLAGS_MAP) -o $@ $^ $(CLI_LIBS)
+
 $(RELEASE_DIR)/asmflowd: $(DAEMON_OBJ_RELEASE)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS_SEC) $(LDFLAGS_MAP) -o $@.unstripped $^ $(DAEMON_LIBS)
@@ -257,6 +292,13 @@ $(RELEASE_DIR)/asmflow-tui: $(TUI_OBJ_RELEASE)
 	objcopy --strip-all --add-gnu-debuglink=$@.debug $@.unstripped $@
 	chmod +x $@
 
+$(RELEASE_DIR)/asmflowctl: $(CLI_OBJ_RELEASE)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS_SEC) $(LDFLAGS_MAP) -o $@.unstripped $^ $(CLI_LIBS)
+	objcopy --only-keep-debug $@.unstripped $@.debug
+	objcopy --strip-all --add-gnu-debuglink=$@.debug $@.unstripped $@
+	chmod +x $@
+
 # The unit-test binary is debug-only: it depends on assertions, arena guard
 # mode, and the clock override, none of which exist in a release build.
 $(DEBUG_DIR)/asmflow-tests: $(TEST_OBJ_DEBUG)
@@ -264,8 +306,8 @@ $(DEBUG_DIR)/asmflow-tests: $(TEST_OBJ_DEBUG)
 	$(CC) $(LDFLAGS_SEC) $(LDFLAGS_MAP) -o $@ $^ $(TEST_LIBS)
 
 build-tests: $(DEBUG_DIR)/asmflow-tests
-build-debug: $(DEBUG_DIR)/asmflowd $(DEBUG_DIR)/asmflow-tui
-build-release: $(RELEASE_DIR)/asmflowd $(RELEASE_DIR)/asmflow-tui
+build-debug: $(DEBUG_DIR)/asmflowd $(DEBUG_DIR)/asmflow-tui $(DEBUG_DIR)/asmflowctl
+build-release: $(RELEASE_DIR)/asmflowd $(RELEASE_DIR)/asmflow-tui $(RELEASE_DIR)/asmflowctl
 build: build-debug build-release
 
 # ---------------------------------------------------------------------------
@@ -613,6 +655,78 @@ gate-m9: gate-m8 test-mcp-http-modern test-mcp-http-legacy \
          test-mcp-http-security valgrind-mcp
 	$(PYTHON) scripts/gate_m9.py --build-dir $(BUILD_DIR) --skip-suites
 	@printf 'M9 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M10 targets: ncursesw TUI and non-interactive control CLI.
+#
+# Layout tests use the renderer's canonical non-curses dump while keyboard and
+# cleanup behavior run through a real PTY.  The memcheck target prefixes those
+# same real client processes with Valgrind; output goes into BUILD_DIR so it
+# cannot perturb the JSON or golden stdout contracts.
+# ---------------------------------------------------------------------------
+test-tui-layout: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_tui_layout
+
+test-tui-keyboard: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_tui_keyboard
+
+test-tui-mono: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_tui_mono
+
+test-tui-terminal-restore: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_tui_terminal_restore
+
+test-cli-contract: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_cli_contract
+
+valgrind-tui: build-debug
+	ASMFLOW_TUI_RUNNER='valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite --errors-for-leak-kinds=definite --track-origins=yes --error-exitcode=99 --log-file=$(BUILD_DIR)/valgrind-tui.%p.log' \
+	  ASMFLOW_CLI_RUNNER='valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite --errors-for-leak-kinds=definite --track-origins=yes --error-exitcode=99 --log-file=$(BUILD_DIR)/valgrind-cli.%p.log' \
+	  BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v \
+	  tests.test_tui_layout.TuiLayoutTests.test_overview_matches_all_three_required_goldens \
+	  tests.test_cli_contract.CliContractTests.test_json_mode_maps_methods_and_params_and_preserves_full_envelope
+
+gate-m10: gate-m9 test-tui-layout test-tui-keyboard test-tui-mono \
+          test-tui-terminal-restore test-cli-contract valgrind-tui
+	$(PYTHON) scripts/gate_m10.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M10 gate passed for AsmFlow %s\n' '$(VERSION)'
+
+# ---------------------------------------------------------------------------
+# M11 targets: security, observability, and recovery.
+#
+# Each HARNESS target remains focused: secret scanning and file modes diagnose
+# different trust boundaries, while crash and graceful recovery deliberately
+# exercise different signal semantics.  The fuzz smoke is deterministic and
+# bounded but still launches every input in a fresh native process.
+# ---------------------------------------------------------------------------
+test-security: build-debug build-tests
+	$(DEBUG_DIR)/asmflow-tests --filter m11/security --verbose
+	$(DEBUG_DIR)/asmflow-tests --filter m11/control_peer --verbose
+	$(DEBUG_DIR)/asmflow-tests --filter m11/provider_header --verbose
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_security
+
+test-redaction: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_redaction
+
+test-permissions: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_permissions
+
+fuzz-smoke: build-tests
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_fuzz_smoke
+
+test-backup-restore: build-tests
+	$(DEBUG_DIR)/asmflow-tests --filter backup/ --verbose
+
+test-crash-recovery: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_crash_recovery
+
+test-graceful-shutdown: build-debug
+	BUILD_DIR=$(BUILD_DIR) $(PYTHON) -m unittest -v tests.test_graceful_shutdown
+
+gate-m11: gate-m10 test-security test-redaction test-permissions fuzz-smoke \
+          test-backup-restore test-crash-recovery test-graceful-shutdown
+	$(PYTHON) scripts/gate_m11.py --build-dir $(BUILD_DIR) --skip-suites
+	@printf 'M11 gate passed for AsmFlow %s\n' '$(VERSION)'
 
 package: check
 	@mkdir -p dist

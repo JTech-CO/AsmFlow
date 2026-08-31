@@ -178,6 +178,13 @@ sql_delete_stale_mcp:
 sql_select_mcp_count:
         db "SELECT COUNT(*) FROM mcp_servers", 0
 
+sql_insert_audit:
+        db "INSERT INTO audit_events"
+        db " (occurred_at_ms, peer_uid, peer_pid, action, outcome, status)"
+        db " VALUES (?1,?2,?3,?4,?5,?6)", 0
+sql_select_audit_count:
+        db "SELECT COUNT(*) FROM audit_events", 0
+
 sql_set_setting:
         db "INSERT INTO settings (key, value, updated_at_ms) VALUES (?1,?2,?3)"
         db " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
@@ -991,6 +998,14 @@ af_repo_request_count:
         call    af_repo_count
         AF_LEAVE
 
+        global af_repo_audit_count
+af_repo_audit_count:
+        AF_ENTER 0
+        mov     rdx, rsi
+        lea     rsi, [sql_select_audit_count]
+        call    af_repo_count
+        AF_LEAVE
+
 ; ---------------------------------------------------------------------------
 ; af_repo_route_target_count(af_db *db, const char *route_id, i64 *out)
 ;   -> af_status
@@ -1588,6 +1603,103 @@ af_repo_prune_requests:
         call    af_repo_exec_one_int
 .done:
         AF_LEAVE
+
+; ---------------------------------------------------------------------------
+; af_repo_record_audit(af_db *db, const char *static_action, i64 peer_uid,
+;                      i64 peer_pid, const char *static_outcome, i64 status)
+;   -> af_status
+;
+; Both strings are STATIC names selected by the control dispatcher.  No
+; request params or target values cross this boundary, so a credential cannot
+; become an audit value even if a future command accepts one by mistake.
+; ---------------------------------------------------------------------------
+        global af_repo_record_audit
+af_repo_record_audit:
+        AF_ENTER 64
+        test    rdi, rdi
+        jz      .invalid
+        test    rsi, rsi
+        jz      .invalid
+        test    r8, r8
+        jz      .invalid
+        mov     rbx, rdi
+        mov     r12, rsi
+        mov     r13, rdx
+        mov     r14, rcx
+        mov     r15, r8
+        mov     [rsp + 32], r9
+
+        mov     rdi, rbx
+        call    af_repo_guard_write
+        test    rax, rax
+        js      .done
+        lea     rdi, [rsp + 16]
+        call    af_realtime_ms
+        test    rax, rax
+        js      .done
+        mov     rdi, rbx
+        lea     rsi, [sql_insert_audit]
+        lea     rdx, [rsp]
+        call    af_db_prepare
+        test    rax, rax
+        js      .done
+        mov     rax, [rsp]
+        mov     [rsp + 8], rax
+
+        mov     rdi, rax
+        mov     rsi, 1
+        mov     rdx, [rsp + 16]
+        call    af_db_bind_int
+        test    rax, rax
+        js      .finalize
+        mov     rdi, [rsp + 8]
+        mov     rsi, 2
+        mov     rdx, r13
+        call    af_db_bind_int
+        test    rax, rax
+        js      .finalize
+        mov     rdi, [rsp + 8]
+        mov     rsi, 3
+        mov     rdx, r14
+        call    af_db_bind_int
+        test    rax, rax
+        js      .finalize
+        mov     rdi, [rsp + 8]
+        mov     rsi, 4
+        mov     rdx, r12
+        call    af_db_bind_cstr
+        test    rax, rax
+        js      .finalize
+        mov     rdi, [rsp + 8]
+        mov     rsi, 5
+        mov     rdx, r15
+        call    af_db_bind_cstr
+        test    rax, rax
+        js      .finalize
+        mov     rdi, [rsp + 8]
+        mov     rsi, 6
+        mov     rdx, [rsp + 32]
+        call    af_db_bind_int
+        test    rax, rax
+        js      .finalize
+        mov     rdi, rbx
+        mov     rsi, [rsp + 8]
+        call    af_db_step
+        cmp     rax, AF_E_EOF
+        je      .ok
+        test    rax, rax
+        js      .finalize
+.ok:
+        xor     eax, eax
+.finalize:
+        mov     [rsp + 40], rax
+        mov     rdi, [rsp + 8]
+        call    af_db_finalize
+        mov     rax, [rsp + 40]
+.done:
+        AF_LEAVE
+.invalid:
+        AF_LEAVE_ERR AF_E_INVALID
 
 ; ---------------------------------------------------------------------------
 ; Statement accessors for the control plane's list methods. Returning the

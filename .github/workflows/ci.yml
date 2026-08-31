@@ -101,5 +101,11 @@ jobs:
       - name: M7 gate - routing, health, circuit breaking, and fallback
         run: make gate-m7
 
+      - name: M10 gate - TUI and non-interactive CLI
+        run: make gate-m10
+
+      - name: M11 gate - security, observability, and recovery
+        run: make gate-m11
+
       - name: GDB smoke check
         run: make gdb-abi-smoke

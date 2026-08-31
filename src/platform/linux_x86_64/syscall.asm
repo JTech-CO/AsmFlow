@@ -162,6 +162,7 @@ AF_SYSCALL chmod,          SYS_chmod,          2
 AF_SYSCALL fchmod,         SYS_fchmod,         2
 AF_SYSCALL umask,          SYS_umask,          1
 AF_SYSCALL getuid,         SYS_getuid,         0
+AF_SYSCALL geteuid,        SYS_geteuid,        0
 AF_SYSCALL getgid,         SYS_getgid,         0
 AF_SYSCALL setpgid,        SYS_setpgid,        2
 AF_SYSCALL setsid,         SYS_setsid,         0
